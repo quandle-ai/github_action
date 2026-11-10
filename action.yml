@@ -1,0 +1,59 @@
+name: Quandle Exposure Check
+description: Checks every deploy from the outside and comments only when it exposed something new.
+author: Feudal Security, LLC
+branding:
+  icon: shield
+  color: gray-dark
+
+inputs:
+  url:
+    description: >
+      Production URL. Target for workflow_dispatch / schedule runs. On deployment_status it is only a
+      fallback when the event has no URL (the deploy's own URL always wins).
+    required: false
+  fail-on:
+    description: 'Fail the job on NEW findings at or above: critical | high | medium | never'
+    required: false
+    default: critical
+  comment:
+    description: Post / update one PR comment for new and resolved findings.
+    required: false
+    default: 'true'
+  issue:
+    description: Keep one "production exposures" issue updated for deploys with no open PR.
+    required: false
+    default: 'true'
+  bypass-secret:
+    description: >
+      Vercel protection bypass secret. Vercel protects every deployment URL by default, so set this for
+      Vercel deploys to be scanned. Sent to the Quandle engine for this scan only; never logged or stored.
+    required: false
+  mock:
+    description: Test only. Return canned results instead of calling the engine.
+    required: false
+    default: 'false'
+  mock-scenario:
+    description: 'Test only (mock: true): clean | critical | fixed | first-scan'
+    required: false
+    default: clean
+  github-token:
+    description: >
+      Token used for PR comments, the production issue, and reading .quandle-ignore.yml. Leave it as the
+      default: Quandle only updates comments and issues written by github-actions[bot], so any other token
+      posts a new comment or issue on every run.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  new-findings:
+    description: Number of new findings (after ignores).
+  critical:
+    description: Number of new critical findings.
+  scan-id:
+    description: Engine scan id (empty when not scanned).
+  status:
+    description: 'scanned | skipped | protected | engine-error | rate-limited | mock | config-error | internal-error'
+
+runs:
+  using: node24
+  main: dist/index.js

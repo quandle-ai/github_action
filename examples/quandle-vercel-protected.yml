@@ -1,0 +1,43 @@
+# Quandle: Vercel (every deployment is protected by default).
+#
+# Use this for Vercel: it protects every deployment URL by default, production included (a login page).
+# Without the bypass secret, Quandle reports "Not scanned: protected" for them, never a pass.
+#
+# Setup:
+#   1. Vercel > Project > Settings > Deployment Protection > Protection Bypass for Automation.
+#   2. Save the generated secret as a GitHub repo secret named VERCEL_AUTOMATION_BYPASS_SECRET.
+#
+# The secret is sent to the Quandle engine for that scan only. It is never logged or stored.
+
+name: Quandle
+
+on:
+  deployment_status:
+  # "Scan now" button in the Actions tab: scans the `url` below.
+  workflow_dispatch:
+
+permissions:
+  # Proves which repo is calling the Quandle engine (no signup, no API key).
+  id-token: write
+  # One PR comment, updated in place.
+  pull-requests: write
+  # One "production exposures" issue, updated in place.
+  issues: write
+  # Find the PR for this commit, check the default branch, read .quandle-ignore.yml.
+  contents: read
+
+jobs:
+  scan:
+    # Only successful deploys (and Scan now) start a job; pending/failed deploys don't use a runner.
+    if: >-
+      github.event_name != 'deployment_status' ||
+      github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: quandle-ai/github_action@v1
+        with:
+          # Your production URL. Used by Scan now; deploys always scan their own URL.
+          url: https://your-app.example.com
+          # Always from a GitHub secret, never pasted here as plain text.
+          bypass-secret: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}

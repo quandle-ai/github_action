@@ -1,0 +1,39 @@
+# Quandle: hardened setup.
+#
+# For teams that pin every third-party action and grant the least access possible:
+#   - The Action is pinned to a full commit SHA, not a moving tag. Replace <full-commit-sha>
+#     with the SHA of the release you reviewed; keep the "# v1.x.y" comment so Dependabot
+#     can propose updates.
+#   - Only two permissions: no PR comment and no issue. Results are in the job summary and
+#     the job's own pass/fail.
+#   - Fails the job on new High findings too, not only Critical.
+
+name: Quandle
+
+on:
+  deployment_status:
+  # "Scan now" button in the Actions tab: scans the `url` below.
+  workflow_dispatch:
+
+permissions:
+  # Proves which repo is calling the Quandle engine (no signup, no API key).
+  id-token: write
+  # Check the default branch, read .quandle-ignore.yml.
+  contents: read
+
+jobs:
+  scan:
+    # Only successful deploys (and Scan now) start a job; pending/failed deploys don't use a runner.
+    if: >-
+      github.event_name != 'deployment_status' ||
+      github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: quandle-ai/github_action@<full-commit-sha> # v1.0.0
+        with:
+          # Your production URL. Used by Scan now; deploys always scan their own URL.
+          url: https://your-app.example.com
+          fail-on: high
+          comment: false
+          issue: false

@@ -1,0 +1,39 @@
+# Quandle: standard setup. Start here.
+#
+# Copy to .github/workflows/quandle.yml. Scans every successful deploy (Vercel, Netlify,
+# or any host that posts GitHub deployment statuses) and adds a "Scan now" button.
+# Comments on the PR only when a deploy exposed something new.
+
+name: Quandle
+
+on:
+  deployment_status:
+  # "Scan now" button in the Actions tab: scans the `url` below.
+  workflow_dispatch:
+
+permissions:
+  # Proves which repo is calling the Quandle engine (no signup, no API key).
+  id-token: write
+  # One PR comment, updated in place.
+  pull-requests: write
+  # One "production exposures" issue, updated in place.
+  issues: write
+  # Find the PR for this commit, check the default branch, read .quandle-ignore.yml.
+  contents: read
+
+jobs:
+  scan:
+    # Only successful deploys (and Scan now) start a job; pending/failed deploys don't use a runner.
+    if: >-
+      github.event_name != 'deployment_status' ||
+      github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: quandle-ai/github_action@v1
+        with:
+          # Your production URL. Used by Scan now; deploys always scan their own URL.
+          url: https://your-app.example.com
+          # Vercel protects every deployment URL by default: add your "Protection Bypass for
+          # Automation" secret as a repository secret and uncomment this, or deploys come back "Not scanned".
+          # bypass-secret: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}

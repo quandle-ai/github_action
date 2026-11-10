@@ -1,0 +1,10 @@
+# Generated or vendored: never hand-formatted.
+dist/
+node_modules/
+coverage/
+package-lock.json
+# Prose and spec files keep their hand layout (tables, wrapping).
+*.md
+LICENSE
+# Editor settings belong to the developer, not the formatter.
+.vscode/

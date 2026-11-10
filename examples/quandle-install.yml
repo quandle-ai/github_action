@@ -1,0 +1,35 @@
+# Quandle: checks every deploy from the outside and comments only when it exposed something new.
+#
+# This file works as-is. Two things to do in Vercel (other hosts: nothing):
+#   1. Settings > Git: make sure GitHub deployments are created, or this never runs.
+#   2. Settings > Deployment Protection > Protection Bypass for Automation: create a secret and save it
+#      in this repo as VERCEL_AUTOMATION_BYPASS_SECRET. Without it, Vercel deploys come back "Not scanned".
+
+name: Quandle
+
+on:
+  deployment_status:
+
+permissions:
+  # Proves which repo is calling the Quandle engine (no signup, no API key).
+  id-token: write
+  # One PR comment, updated in place.
+  pull-requests: write
+  # One "production exposures" issue, updated in place.
+  issues: write
+  # Find the PR for this commit, check the default branch, read .quandle-ignore.yml.
+  contents: read
+
+jobs:
+  scan:
+    # Only successful deploys start a job.
+    if: >-
+      github.event_name != 'deployment_status' ||
+      github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: quandle-ai/github_action@v1
+        with:
+          # Empty until you add the secret above; then Vercel deploys are scanned too.
+          bypass-secret: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}

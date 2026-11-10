@@ -1,0 +1,2 @@
+# LF everywhere, so the committed dist/ matches what CI builds on Linux.
+* text=auto eol=lf

@@ -1,0 +1,24 @@
+# Keeps our exact pins current. Every update is a PR that must pass full CI and is
+# reviewed like code (a dependency update changes what ships in dist/index.js).
+# Minor and patch updates are grouped into one PR per ecosystem; every MAJOR update
+# gets its own PR, so a breaking upgrade is never hidden inside a group.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-and-patch:
+        update-types: ['minor', 'patch']
+    # Keep exact versions, matching package.json ("1.2.3", never "^1.2.3").
+    versioning-strategy: increase
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Updates the commit SHAs we pin our CI actions to, with their version comments.
+    groups:
+      github-actions-minor-and-patch:
+        update-types: ['minor', 'patch']

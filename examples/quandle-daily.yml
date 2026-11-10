@@ -1,0 +1,36 @@
+# Quandle: daily production check.
+#
+# Scans your production URL once a day (and on demand with "Scan now"), between deploys.
+# No deploy trigger and no PR comments: results go to one "production exposures" issue.
+# Use it alongside the standard setup, or on its own if your host doesn't post deployments.
+#
+# Note: GitHub pauses scheduled workflows in public repos after 60 days without activity.
+
+name: Quandle daily
+
+on:
+  schedule:
+    # 06:17 UTC every day (off the hour, where runners queue less).
+    - cron: '17 6 * * *'
+  # "Scan now" button in the Actions tab.
+  workflow_dispatch:
+
+permissions:
+  # Proves which repo is calling the Quandle engine (no signup, no API key).
+  id-token: write
+  # One "production exposures" issue, updated in place.
+  issues: write
+  # Read .quandle-ignore.yml.
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: quandle-ai/github_action@v1
+        with:
+          # Your production URL (required: there is no deploy to read it from).
+          url: https://your-app.example.com
+          # Nothing comments on PRs here.
+          comment: false
