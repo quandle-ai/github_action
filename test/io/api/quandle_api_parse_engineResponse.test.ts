@@ -10,7 +10,8 @@
 // or missing field, an unknown status, state or severity, a scanId outside 1 to 64
 // letters, digits, `_` or `-`, or any malformed finding is engine-error, never
 // "0 findings"; every not-scanned outcome shows our own fixed
-// reason, never engine text; and url and environment come from our request.
+// reason, never engine text; url and environment come from our request; and activeChecks
+// is accepted only as ran, or as unverified with a well-formed verification token.
 // Rules: FND-4, FND-6, TRU-7
 // ==========================================================================
 import { describe, expect, it } from 'vitest';
@@ -21,7 +22,10 @@ const REQUEST: ScanRequest = {
   url: 'https://preview.example.com/',
   environment: 'Preview',
   production: false,
+  contract: 2,
 };
+// A verification token of the right shape: qv_ and 32 lowercase hex characters. Not a secret.
+const TOKEN = `qv_${'0123456789abcdef'.repeat(2)}`;
 const ENGINE_TEXT = 'FAKE_ENGINE_TEXT';
 
 const PROTECTED_REASON = 'the deploy is protected; set `bypass-secret` to scan it';
@@ -83,6 +87,7 @@ describe('quandle_api_parse_engineResponse', () => {
       const result = quandle_api_parse_engineResponse(answer({ status: 'scanned', findings: [] }), {
         url: 'https://app.example.com/',
         production: true,
+        contract: 2,
       });
       expect(result).not.toHaveProperty('environment');
     });
@@ -112,6 +117,92 @@ describe('quandle_api_parse_engineResponse', () => {
         findings: [],
         isMock: false,
       });
+    });
+  });
+
+  describe('active checks (TRU-7)', () => {
+    it('[TRU-7] reads activeChecks ran on a scanned answer as active checks that ran', () => {
+      const result = parse({ status: 'scanned', findings: [], activeChecks: 'ran' });
+      expect(result).toMatchObject({ status: 'scanned', activeChecks: { kind: 'ran' } });
+    });
+
+    it('[TRU-7] reads activeChecks unverified with a qv_ token as unverified, keeping the token', () => {
+      const result = parse({
+        status: 'scanned',
+        findings: [rawFinding()],
+        activeChecks: 'unverified',
+        verificationToken: TOKEN,
+      });
+      expect(result).toMatchObject({
+        status: 'scanned',
+        findings: [rawFinding()],
+        activeChecks: { kind: 'unverified', verificationToken: TOKEN },
+      });
+    });
+
+    it('[TRU-7] accepts a scanned answer without activeChecks and says nothing about active checks', () => {
+      const result = parse({ status: 'scanned', findings: [] });
+      expect(result.status).toBe('scanned');
+      expect(result).not.toHaveProperty('activeChecks');
+    });
+
+    it.each(['verified', 'Ran', 'UNVERIFIED', '', 'skipped'])(
+      '[TRU-7] turns a scanned answer whose activeChecks is "%s" into engine-error',
+      (activeChecks) => {
+        expect(parse({ status: 'scanned', findings: [], activeChecks })).toEqual(ENGINE_ERROR);
+      },
+    );
+
+    it.each([
+      ['true', true],
+      ['1', 1],
+      ['null', null],
+      ['a list', ['ran']],
+    ])(
+      '[TRU-7] turns a scanned answer whose activeChecks is %s, not text, into engine-error',
+      (_name, value) => {
+        expect(parse({ status: 'scanned', findings: [], activeChecks: value })).toEqual(ENGINE_ERROR);
+      },
+    );
+
+    it('[TRU-7] turns a protected answer that carries activeChecks into engine-error', () => {
+      expect(parse({ status: 'protected', findings: [], activeChecks: 'ran' })).toEqual(ENGINE_ERROR);
+    });
+
+    it('[TRU-7] turns a protected answer that carries a verification token into engine-error', () => {
+      expect(parse({ status: 'protected', findings: [], verificationToken: TOKEN })).toEqual(ENGINE_ERROR);
+    });
+
+    it('[TRU-7] turns activeChecks unverified without a verification token into engine-error', () => {
+      expect(parse({ status: 'scanned', findings: [], activeChecks: 'unverified' })).toEqual(ENGINE_ERROR);
+    });
+
+    it('[TRU-7] turns activeChecks ran that carries a verification token into engine-error', () => {
+      const body = { status: 'scanned', findings: [], activeChecks: 'ran', verificationToken: TOKEN };
+      expect(parse(body)).toEqual(ENGINE_ERROR);
+    });
+
+    it('[TRU-7] turns a verification token without activeChecks into engine-error', () => {
+      expect(parse({ status: 'scanned', findings: [], verificationToken: TOKEN })).toEqual(ENGINE_ERROR);
+    });
+
+    it.each([
+      ['31 hex characters', `qv_${'a'.repeat(31)}`],
+      ['33 hex characters', `qv_${'a'.repeat(33)}`],
+      ['uppercase hex', `qv_${'A'.repeat(32)}`],
+      ['a letter outside hex', `qv_${'g'.repeat(32)}`],
+      ['no qv_ prefix', 'a'.repeat(35)],
+      ['a trailing newline', `${`qv_${'a'.repeat(32)}`}\n`],
+      ['Markdown after the token', `qv_${'a'.repeat(32)}[x](https://evil.example.com)`],
+      ['an empty string', ''],
+    ])('[TRU-7] turns a verification token with %s into engine-error', (_name, verificationToken) => {
+      const body = { status: 'scanned', findings: [], activeChecks: 'unverified', verificationToken };
+      expect(parse(body)).toEqual(ENGINE_ERROR);
+    });
+
+    it('[TRU-7] turns a verification token that is a number, not text, into engine-error', () => {
+      const body = { status: 'scanned', findings: [], activeChecks: 'unverified', verificationToken: 12 };
+      expect(parse(body)).toEqual(ENGINE_ERROR);
     });
   });
 

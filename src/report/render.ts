@@ -6,10 +6,17 @@
 // Owns the ONLY escaping functions (Markdown-safe, code-span-safe, log-safe).
 // Everything untrusted must pass through one of them before output.
 // Pure: no network, no @actions imports.
-// Rules: TGT-3, TGT-10, FND-1, FND-3, OUT-1, OUT-7 … OUT-12, ERR-4, IGN-2, IGN-10, MOCK-2
+// Rules: TGT-3, TGT-10, FND-1, FND-3, OUT-1, OUT-7 … OUT-13, ERR-4, IGN-2, IGN-10, MOCK-2
 // ==========================================================================
 import { SEVERITY_RANK } from '../scan/severity';
-import type { Finding, FindingState, IgnoredFinding, IgnoreOutcome, ScanResult } from '../types';
+import type {
+  ActiveChecks,
+  Finding,
+  FindingState,
+  IgnoredFinding,
+  IgnoreOutcome,
+  ScanResult,
+} from '../types';
 
 export const MOCK_BANNER = '> ⚠ **MOCK RESULTS — not a real scan**';
 // OUT-7: the hidden marker that identifies our PR comment (together with its author).
@@ -24,6 +31,12 @@ export const MAX_BODY_CHARACTERS = 60_000;
 const MORE_LINE_RESERVE = 100;
 
 const SUMMARY_HEADING = '## Quandle';
+// OUT-13: the fixed texts about the exposed-file checks. Only the token between them is engine text.
+const ACTIVE_CHECKS_RAN_LINE = 'Exposed-file checks ran: this site is verified for this repository.';
+const ACTIVE_CHECKS_UNVERIFIED_LINE =
+  '**Exposed-file checks did not run.** Quandle only requests files such as `/.env` and `/.git/HEAD` from a site that proves it belongs to this repository. To turn them on, serve a file at `/.well-known/quandle.txt` containing this line:';
+const ACTIVE_CHECKS_FOLDER_LINE =
+  'In Next.js, Vite and Astro projects that file is `public/.well-known/quandle.txt`.';
 // OUT-1: GitHub caps a step summary at 1 MiB; 100 findings stays far below it.
 export const MAX_SUMMARY_FINDINGS = 100;
 const MAX_TEXT_LENGTH = 200;
@@ -81,9 +94,10 @@ export function quandle_render_build_notScannedSummary(reason: string): string {
 }
 
 // Builds the job summary Markdown: mock banner (if mock), then either "Not scanned: <reason>"
-// or the scanned URL/environment and the findings, most important first, at most 100.
+// or the scanned URL/environment and the findings, most important first, at most 100, and last
+// what the engine said about the exposed-file checks.
 // Returns: the summary Markdown; all untrusted values escaped.
-// Rules: OUT-1, ERR-4, MOCK-2, FND-3
+// Rules: OUT-1, OUT-13, ERR-4, MOCK-2, FND-3
 export function quandle_render_build_jobSummary(result: ScanResult, outcome: IgnoreOutcome): string {
   const banner = result.isMock ? [MOCK_BANNER, ''] : [];
   if (result.status !== 'scanned') {
@@ -98,7 +112,30 @@ export function quandle_render_build_jobSummary(result: ScanResult, outcome: Ign
     '',
     ...quandle_render_build_findingLines(outcome),
     ...quandle_render_build_ignoredLines(outcome.ignored),
+    ...quandle_render_build_activeChecksLines(result.activeChecks),
   ].join('\n');
+}
+
+// The end of the summary about the exposed-file checks (OUT-13): nothing when the engine said
+// nothing, one fixed line when they ran, and for an unverified site a fixed section with the path
+// to serve and the verification token on its own line, in a code span (the token is engine text).
+// Returns: the Markdown lines, starting with a blank line, or none.
+// Rules: OUT-13, FND-3
+function quandle_render_build_activeChecksLines(activeChecks: ActiveChecks | undefined): string[] {
+  if (activeChecks === undefined) return [];
+  switch (activeChecks.kind) {
+    case 'ran':
+      return ['', ACTIVE_CHECKS_RAN_LINE];
+    case 'unverified':
+      return [
+        '',
+        ACTIVE_CHECKS_UNVERIFIED_LINE,
+        '',
+        quandle_render_escape_codeSpan(activeChecks.verificationToken),
+        '',
+        ACTIVE_CHECKS_FOLDER_LINE,
+      ];
+  }
 }
 
 // The findings part of the summary: the shown findings, most important first (new, or with an

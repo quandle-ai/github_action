@@ -5,8 +5,8 @@
 // Tests: src/io/api.ts → quandle_api_build_scanRequest
 // Also covers (private): none
 //
-// Proves the scan request carries only url, environment (when known), production
-// and bypassSecret (when set), and that production is the target's production
+// Proves the scan request carries only url, environment (when known), production,
+// bypassSecret (when set) and contract 2, and that production is the target's production
 // decision (true for Scan now and production deploys), never the environment name.
 // Rules: TGT-9, TRU-1
 // ==========================================================================
@@ -29,13 +29,20 @@ function buildTarget(overrides: Partial<ScanTarget> = {}): ScanTarget {
 }
 
 describe('quandle_api_build_scanRequest', () => {
-  it('[TRU-1] sends only url, environment, production and bypassSecret', () => {
+  it('[TRU-1] sends only url, environment, production, bypassSecret and contract', () => {
     expect(quandle_api_build_scanRequest(buildTarget(), 'FAKE_BYPASS')).toEqual({
       url: 'https://preview.example.com/',
       environment: 'Preview',
       production: false,
       bypassSecret: 'FAKE_BYPASS',
+      contract: 2,
     });
+  });
+
+  it('[TRU-1] always sends contract 2, with or without an environment or a bypass secret', () => {
+    const { environment: _unused, ...withoutEnvironment } = buildTarget();
+    expect(quandle_api_build_scanRequest(withoutEnvironment, undefined).contract).toBe(2);
+    expect(quandle_api_build_scanRequest(buildTarget(), 'FAKE_BYPASS').contract).toBe(2);
   });
 
   it('[TRU-1] leaves environment out when the deploy has none', () => {
@@ -68,7 +75,7 @@ describe('quandle_api_build_scanRequest', () => {
 
   it('[TRU-1] never sends the deploy commit or source (they come from the OIDC token, TRU-2)', () => {
     expect(Object.keys(quandle_api_build_scanRequest(buildTarget(), 'FAKE_BYPASS')).sort()).toEqual(
-      ['bypassSecret', 'environment', 'production', 'url'].sort(),
+      ['bypassSecret', 'contract', 'environment', 'production', 'url'].sort(),
     );
   });
 });

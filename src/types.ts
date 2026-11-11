@@ -41,6 +41,12 @@ interface ScanResultBase {
   readonly scanId?: string;
 }
 
+// TRU-7: whether the engine's active checks (the exposed-file checks) ran for a scan. A site that has
+// not proved it belongs to the repository is `unverified`, and only then is there a verification
+// token: the line the site must publish to turn the checks on (OUT-13).
+export type ActiveChecks =
+  { readonly kind: 'ran' } | { readonly kind: 'unverified'; readonly verificationToken: string };
+
 // A scan that happened (findings, maybe a mock), or one that didn't: that one always says
 // why, has no findings (ERR-4), and is never a mock (MOCK-1).
 export type ScanResult =
@@ -48,6 +54,8 @@ export type ScanResult =
       readonly status: 'scanned';
       readonly findings: readonly Finding[];
       readonly isMock: boolean;
+      // Absent when the engine said nothing about active checks, and for every mock (OUT-13).
+      readonly activeChecks?: ActiveChecks;
     })
   | (ScanResultBase & {
       readonly status: Exclude<ScanStatus, 'scanned'>;
@@ -64,6 +72,8 @@ export interface ScanRequest {
   // TRU-1: the same production decision as TGT-11, never from the environment name (TGT-9).
   readonly production: boolean;
   readonly bypassSecret?: string;
+  // TRU-1: the response shape this version of the Action understands (TRU-7). Always 2.
+  readonly contract: 2;
 }
 
 // OUT-6: every value the `status` output can take.

@@ -26,6 +26,7 @@ const REQUEST: ScanRequest = {
   environment: 'Preview',
   production: false,
   bypassSecret: 'FAKE_BYPASS',
+  contract: 2,
 };
 const MAX_BYTES = 2 * 1024 * 1024;
 const ENGINE_ERROR_REASON = 'the Quandle engine could not complete the scan';
@@ -75,7 +76,7 @@ describe('quandle_api_request_postScanToEngine', () => {
     it('[TRU-4] calls only https://api.quandle.ai/v1/scan, whatever the request URL says', async () => {
       const engine = buildFakeEngine({ respond: engineAnswer(CLEAN_SCAN) });
       await quandle_api_request_postScanToEngine(
-        { url: 'https://evil.example.com/v1/scan', production: false },
+        { url: 'https://evil.example.com/v1/scan', production: false, contract: 2 },
         engine,
       );
       expect(engine.requests.map((request) => request.url)).toEqual(['https://api.quandle.ai/v1/scan']);
@@ -119,13 +120,13 @@ describe('quandle_api_request_postScanToEngine', () => {
       expect(new Headers(engine.requests[0]?.init.headers).has('authorization')).toBe(false);
     });
 
-    it('[TRU-2] sends x-amz-content-sha256 as the sha256 of the body: 3d9119e8… for this request', async () => {
+    it('[TRU-2] sends x-amz-content-sha256 as the sha256 of the body: 14e53593… for this request', async () => {
       const engine = buildFakeEngine({ respond: engineAnswer(CLEAN_SCAN) });
       await quandle_api_request_postScanToEngine(REQUEST, engine);
       const headers = new Headers(engine.requests[0]?.init.headers);
       // Computed independently (sha256sum) over the exact JSON of REQUEST.
       expect(headers.get('x-amz-content-sha256')).toBe(
-        '3d9119e8dddfd7794ada2880657506f2a792838506108f6b7191ea1d1b3e8752',
+        '14e53593b7bf225ae5976da351c56f1066c27552d89b1cb13c51c19db1b5cc1b',
       );
     });
 
@@ -262,7 +263,7 @@ describe('quandle_api_request_postScanToEngine', () => {
 
     it('[TGT-1] leaves the environment out of the result when the request has none, never guessing one', async () => {
       const result = await quandle_api_request_postScanToEngine(
-        { url: 'https://app.example.com/', production: false },
+        { url: 'https://app.example.com/', production: false, contract: 2 },
         buildFakeEngine(),
       );
       expect(result).not.toHaveProperty('environment');

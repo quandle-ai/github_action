@@ -9,11 +9,12 @@
 // Every `@ts-expect-error` line MUST fail to compile: if a type is ever loosened,
 // that line starts compiling, the directive becomes unused, and `npm run typecheck`
 // fails. The runtime assertions only confirm the legal counterparts.
-// Rules: ERR-4, FND-2, FND-5, IGN-1, IO-1, MOCK-1, OUT-6, SEV-1, TRU-1
+// Rules: ERR-4, FND-2, FND-5, IGN-1, IO-1, MOCK-1, OUT-6, SEV-1, TRU-1, TRU-7
 // ==========================================================================
 import { describe, expect, it } from 'vitest';
 import type { ActionRuntime } from '../../src/main';
 import type {
+  ActiveChecks,
   FailOn,
   Finding,
   IgnoreEntry,
@@ -104,19 +105,47 @@ describe('src/types.ts', () => {
     expect(removed).toBe('');
   });
 
-  it('[TRU-1] lets only url, environment, production and bypassSecret leave GitHub in a scan request', () => {
+  it('[TRU-1] lets only url, environment, production, bypassSecret and contract leave GitHub in a scan request', () => {
     // Exhaustive: adding any field to ScanRequest (repo, commit, source code, …) breaks this line.
     const fields: Record<keyof ScanRequest, true> = {
       url: true,
       environment: true,
       production: true,
       bypassSecret: true,
+      contract: true,
     };
     const url = 'https://app.example.com/';
     // @ts-expect-error TRU-1: no source code (or anything else) can be put in a scan request.
-    const withSource: ScanRequest = { url, production: false, sourceCode: 'FAKE' };
-    expect(Object.keys(fields)).toEqual(['url', 'environment', 'production', 'bypassSecret']);
+    const withSource: ScanRequest = { url, production: false, contract: 2, sourceCode: 'FAKE' };
+    expect(Object.keys(fields)).toEqual(['url', 'environment', 'production', 'bypassSecret', 'contract']);
     expect(withSource.url).toBe('https://app.example.com/');
+  });
+
+  it('[TRU-1] does not allow a scan request for any contract but 2', () => {
+    const url = 'https://app.example.com/';
+    // @ts-expect-error TRU-1: this Action understands contract 2 and asks for nothing else.
+    const older: ScanRequest = { url, production: false, contract: 1 };
+    // @ts-expect-error TRU-1: a scan request always names its contract.
+    const unnamed: ScanRequest = { url, production: false };
+    expect([older.url, unnamed.url]).toEqual([url, url]);
+  });
+
+  it('[TRU-7] gives a verification token only to unverified active checks, and active checks only to a scan', () => {
+    // @ts-expect-error TRU-7: active checks that ran have no verification token.
+    const ranWithToken: ActiveChecks = { kind: 'ran', verificationToken: 'qv_test' };
+    // @ts-expect-error TRU-7: unverified active checks always carry the token.
+    const unverifiedWithoutToken: ActiveChecks = { kind: 'unverified' };
+    const notScanned: ScanResult = {
+      status: 'protected',
+      url: 'https://app.example.com/',
+      reason: 'test reason',
+      findings: [],
+      isMock: false,
+      // @ts-expect-error TRU-7: only a scan that happened can say whether active checks ran.
+      activeChecks: { kind: 'ran' },
+    };
+    const kinds = [ranWithToken.kind, unverifiedWithoutToken.kind, notScanned.status];
+    expect(kinds).toEqual(['ran', 'unverified', 'protected']);
   });
 
   it('[FND-2] has exactly the four severities critical, high, medium and low', () => {
