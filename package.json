@@ -1,6 +1,6 @@
 {
   "name": "quandle-action",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Quandle GitHub Action: outside-in check of every deploy",
   "license": "MIT",
