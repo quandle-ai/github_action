@@ -3,7 +3,7 @@
 // Written by Feudal Security, LLC (Quandle). MIT License, see LICENSE.
 //
 // Talks to the Quandle engine. Guards the trust boundary: only url, environment,
-// production and bypassSecret leave GitHub, with a masked GitHub OIDC token in
+// production, bypassSecret and the contract number leave GitHub, with a masked GitHub OIDC token in
 // X-Quandle-Token, and they only ever go to the one constant engine URL, never
 // across a redirect. Reads at most
 // 2 MB within 60 seconds and turns the answer into a ScanResult, strictly: anything
@@ -12,15 +12,27 @@
 // ==========================================================================
 import { createHash } from 'node:crypto';
 import { SEVERITY_RANK } from '../scan/severity';
-import type { Finding, FindingState, ScanRequest, ScanResult, Severity, Target } from '../types';
+import type {
+  ActiveChecks,
+  Finding,
+  FindingState,
+  ScanRequest,
+  ScanResult,
+  Severity,
+  Target,
+} from '../types';
 
 // TRU-4: the only place scans and the OIDC token are ever sent.
 // A constant on purpose: there is no input that can change it.
 export const ENGINE_URL = 'https://api.quandle.ai/v1/scan';
 
+// TRU-1: the response shape this version of the Action understands (TRU-7). The engine sends the
+// fields an older Action would reject only to a caller that names this contract.
+const SCAN_CONTRACT = 2;
+
 // Builds the scan request from the target: only the fields allowed to leave GitHub (TRU-1).
 // production is the target's production decision (TGT-11), never guessed from the environment name.
-// Returns: url, environment (when known), production and bypassSecret (when set).
+// Returns: url, environment (when known), production, bypassSecret (when set) and contract 2.
 // Rules: TRU-1, TGT-9
 export function quandle_api_build_scanRequest(
   target: Extract<Target, { kind: 'scan' }>,
@@ -31,6 +43,7 @@ export function quandle_api_build_scanRequest(
     ...(target.environment === undefined ? {} : { environment: target.environment }),
     production: target.isProductionEnvironment,
     ...(bypassSecret === undefined ? {} : { bypassSecret }),
+    contract: SCAN_CONTRACT,
   };
 }
 
@@ -86,6 +99,7 @@ export function quandle_api_parse_engineResponse(
     status: 'scanned',
     findings,
     isMock: false,
+    ...(body.activeChecks === undefined ? {} : { activeChecks: body.activeChecks }),
   };
 }
 
@@ -96,10 +110,25 @@ interface EngineResponseBody {
   readonly status: 'scanned' | 'protected';
   readonly scanId?: string;
   readonly findings: readonly unknown[];
+  readonly activeChecks?: ActiveChecks;
 }
 
 // Every field a 200 answer may have (TRU-7).
-const RESPONSE_FIELDS: ReadonlySet<string> = new Set(['status', 'scanId', 'findings']);
+const RESPONSE_FIELDS: ReadonlySet<string> = new Set([
+  'status',
+  'scanId',
+  'findings',
+  'activeChecks',
+  'verificationToken',
+]);
+
+// TRU-7: qv_ and 32 lowercase hex characters, nothing before or after. It is shown in the summary.
+const VERIFICATION_TOKEN_PATTERN = /^qv_[0-9a-f]{32}$/;
+
+// The active checks of an answer once checked. Having none is well formed, so a malformed answer
+// needs its own value.
+type CheckedActiveChecks =
+  { readonly isWellFormed: true; readonly activeChecks?: ActiveChecks } | { readonly isWellFormed: false };
 
 // FND-6: 1 to 64 ASCII letters, digits, `_` or `-`. Users put scan-id into later workflow steps.
 const SCAN_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -125,8 +154,9 @@ const FINDING_STATE_SET: Readonly<Record<FindingState, true>> = {
 };
 
 // Parses and checks the top level of a 200 answer. JSON.parse runs in a try: the body is untrusted.
-// Returns: the body, or undefined when it is not JSON, not an object, has a field besides status,
-// scanId and findings, a status other than scanned or protected, a bad scanId, or no findings list.
+// Returns: the body, or undefined when it is not JSON, not an object, has a field besides the five
+// of TRU-7, a status other than scanned or protected, a bad scanId, no findings list, malformed
+// active checks, or active checks on a protected answer.
 // Rules: TRU-7, FND-4, FND-6
 function quandle_api_parse_responseBody(bodyText: string): EngineResponseBody | undefined {
   let value: unknown;
@@ -136,11 +166,40 @@ function quandle_api_parse_responseBody(bodyText: string): EngineResponseBody | 
     return undefined;
   }
   if (!quandle_api_check_isRecordWithOnly(value, RESPONSE_FIELDS)) return undefined;
-  const { status, scanId, findings } = value;
+  const { status, scanId, findings, activeChecks, verificationToken } = value;
   if (status !== 'scanned' && status !== 'protected') return undefined;
   if (scanId !== undefined && !quandle_api_check_isScanId(scanId)) return undefined;
   if (!Array.isArray(findings)) return undefined;
-  return { status, ...(scanId === undefined ? {} : { scanId }), findings };
+  const checked = quandle_api_parse_activeChecks(activeChecks, verificationToken);
+  if (!checked.isWellFormed) return undefined;
+  // TRU-7: only a scan that happened can say whether active checks ran.
+  if (status === 'protected' && checked.activeChecks !== undefined) return undefined;
+  return {
+    status,
+    ...(scanId === undefined ? {} : { scanId }),
+    findings,
+    ...(checked.activeChecks === undefined ? {} : { activeChecks: checked.activeChecks }),
+  };
+}
+
+// Checks the two active-checks fields of an answer together (TRU-7): none at all, `ran` with no
+// token, or `unverified` with a well-formed token. The token is shown to the user, so its shape is
+// checked here, at the boundary.
+// Returns: well formed with the active checks (or with none), or not well formed for anything else.
+// Rules: TRU-7, FND-4
+function quandle_api_parse_activeChecks(
+  activeChecks: unknown,
+  verificationToken: unknown,
+): CheckedActiveChecks {
+  const hasNoToken = verificationToken === undefined;
+  if (activeChecks === undefined) return { isWellFormed: hasNoToken };
+  if (activeChecks === 'ran') {
+    return hasNoToken ? { isWellFormed: true, activeChecks: { kind: 'ran' } } : { isWellFormed: false };
+  }
+  if (activeChecks !== 'unverified' || !quandle_api_check_isVerificationToken(verificationToken)) {
+    return { isWellFormed: false };
+  }
+  return { isWellFormed: true, activeChecks: { kind: 'unverified', verificationToken } };
 }
 
 // Checks every finding (FND-6). One bad finding makes the whole answer malformed (FND-4).
@@ -193,6 +252,12 @@ function quandle_api_check_isRecordWithOnly(
 // engine's own format so the engine can change its ids without breaking every scan.
 function quandle_api_check_isScanId(value: unknown): value is string {
   return typeof value === 'string' && SCAN_ID_PATTERN.test(value);
+}
+
+// True for a verification token of exactly the engine's shape (TRU-7): an allowlist, because the
+// token is printed in the job summary.
+function quandle_api_check_isVerificationToken(value: unknown): value is string {
+  return typeof value === 'string' && VERIFICATION_TOKEN_PATTERN.test(value);
 }
 
 // True for a string with at least one character.

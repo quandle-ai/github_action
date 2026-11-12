@@ -14,7 +14,7 @@
 // finding left out), escapes untrusted text, never shows the URL's
 // query, and is the same text for the same result; ignored findings are left out
 // and only counted.
-// Rules: FND-1, FND-3, IGN-10, MOCK-2, OUT-7, OUT-8, OUT-9, TGT-10
+// Rules: FND-1, FND-3, IGN-10, MOCK-2, OUT-7, OUT-8, OUT-9, OUT-13, TGT-10
 // ==========================================================================
 import { describe, expect, it } from 'vitest';
 import { COMMENT_MARKER, MOCK_BANNER, quandle_render_build_prComment } from '../../../src/report/render';
@@ -279,4 +279,19 @@ describe('quandle_render_build_prComment', () => {
       expect(comment).toContain('…and 10 more, see the job summary.');
     });
   });
+
+  it.each([
+    ['unverified', { kind: 'unverified', verificationToken: `qv_${'0123456789abcdef'.repeat(2)}` }],
+    ['ran', { kind: 'ran' }],
+  ] as const)(
+    '[OUT-13] never mentions the exposed-file checks or the token in the comment when active checks are %s',
+    (_name, activeChecks) => {
+      const comment = quandle_render_build_prComment(
+        ...withNoIgnores(buildScanned([buildFinding()], { activeChecks })),
+      );
+      expect(comment).not.toContain('Exposed-file checks');
+      expect(comment).not.toContain('qv_');
+      expect(comment).not.toContain('quandle.txt');
+    },
+  );
 });

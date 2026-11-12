@@ -30367,12 +30367,14 @@ function quandle_severity_check_isAtOrAboveFailOn(finding, failOn) {
 
 // src/io/api.ts
 var ENGINE_URL = "https://api.quandle.ai/v1/scan";
+var SCAN_CONTRACT = 2;
 function quandle_api_build_scanRequest(target, bypassSecret) {
   return {
     url: target.url,
     ...target.environment === void 0 ? {} : { environment: target.environment },
     production: target.isProductionEnvironment,
-    ...bypassSecret === void 0 ? {} : { bypassSecret }
+    ...bypassSecret === void 0 ? {} : { bypassSecret },
+    contract: SCAN_CONTRACT
   };
 }
 var ENGINE_NOT_SCANNED_REASONS = {
@@ -30397,10 +30399,18 @@ function quandle_api_parse_engineResponse(response, request2) {
     ...body.scanId === void 0 ? {} : { scanId: body.scanId },
     status: "scanned",
     findings,
-    isMock: false
+    isMock: false,
+    ...body.activeChecks === void 0 ? {} : { activeChecks: body.activeChecks }
   };
 }
-var RESPONSE_FIELDS = /* @__PURE__ */ new Set(["status", "scanId", "findings"]);
+var RESPONSE_FIELDS = /* @__PURE__ */ new Set([
+  "status",
+  "scanId",
+  "findings",
+  "activeChecks",
+  "verificationToken"
+]);
+var VERIFICATION_TOKEN_PATTERN = /^qv_[0-9a-f]{32}$/;
 var SCAN_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 var FINDING_FIELD_SET = {
   id: true,
@@ -30426,11 +30436,30 @@ function quandle_api_parse_responseBody(bodyText) {
     return void 0;
   }
   if (!quandle_api_check_isRecordWithOnly(value, RESPONSE_FIELDS)) return void 0;
-  const { status, scanId, findings } = value;
+  const { status, scanId, findings, activeChecks, verificationToken } = value;
   if (status !== "scanned" && status !== "protected") return void 0;
   if (scanId !== void 0 && !quandle_api_check_isScanId(scanId)) return void 0;
   if (!Array.isArray(findings)) return void 0;
-  return { status, ...scanId === void 0 ? {} : { scanId }, findings };
+  const checked = quandle_api_parse_activeChecks(activeChecks, verificationToken);
+  if (!checked.isWellFormed) return void 0;
+  if (status === "protected" && checked.activeChecks !== void 0) return void 0;
+  return {
+    status,
+    ...scanId === void 0 ? {} : { scanId },
+    findings,
+    ...checked.activeChecks === void 0 ? {} : { activeChecks: checked.activeChecks }
+  };
+}
+function quandle_api_parse_activeChecks(activeChecks, verificationToken) {
+  const hasNoToken = verificationToken === void 0;
+  if (activeChecks === void 0) return { isWellFormed: hasNoToken };
+  if (activeChecks === "ran") {
+    return hasNoToken ? { isWellFormed: true, activeChecks: { kind: "ran" } } : { isWellFormed: false };
+  }
+  if (activeChecks !== "unverified" || !quandle_api_check_isVerificationToken(verificationToken)) {
+    return { isWellFormed: false };
+  }
+  return { isWellFormed: true, activeChecks: { kind: "unverified", verificationToken } };
 }
 function quandle_api_parse_findings(items) {
   const findings = [];
@@ -30462,6 +30491,9 @@ function quandle_api_check_isRecordWithOnly(value, allowed) {
 }
 function quandle_api_check_isScanId(value) {
   return typeof value === "string" && SCAN_ID_PATTERN.test(value);
+}
+function quandle_api_check_isVerificationToken(value) {
+  return typeof value === "string" && VERIFICATION_TOKEN_PATTERN.test(value);
 }
 function quandle_api_check_isNonEmptyText(value) {
   return typeof value === "string" && value.length > 0;
@@ -30791,6 +30823,9 @@ var MAX_COMMENT_FINDINGS = 50;
 var MAX_BODY_CHARACTERS = 6e4;
 var MORE_LINE_RESERVE = 100;
 var SUMMARY_HEADING = "## Quandle";
+var ACTIVE_CHECKS_RAN_LINE = "Exposed-file checks ran: this site is verified for this repository.";
+var ACTIVE_CHECKS_UNVERIFIED_LINE = "**Exposed-file checks did not run.** Quandle only requests files such as `/.env` and `/.git/HEAD` from a site that proves it belongs to this repository. To turn them on, serve a file at `/.well-known/quandle.txt` containing this line:";
+var ACTIVE_CHECKS_FOLDER_LINE = "In Next.js, Vite and Astro projects that file is `public/.well-known/quandle.txt`.";
 var MAX_SUMMARY_FINDINGS = 100;
 var MAX_TEXT_LENGTH = 200;
 var ELLIPSIS = "\u2026";
@@ -30824,8 +30859,25 @@ function quandle_render_build_jobSummary(result, outcome) {
     checked,
     "",
     ...quandle_render_build_findingLines(outcome),
-    ...quandle_render_build_ignoredLines(outcome.ignored)
+    ...quandle_render_build_ignoredLines(outcome.ignored),
+    ...quandle_render_build_activeChecksLines(result.activeChecks)
   ].join("\n");
+}
+function quandle_render_build_activeChecksLines(activeChecks) {
+  if (activeChecks === void 0) return [];
+  switch (activeChecks.kind) {
+    case "ran":
+      return ["", ACTIVE_CHECKS_RAN_LINE];
+    case "unverified":
+      return [
+        "",
+        ACTIVE_CHECKS_UNVERIFIED_LINE,
+        "",
+        quandle_render_escape_codeSpan(activeChecks.verificationToken),
+        "",
+        ACTIVE_CHECKS_FOLDER_LINE
+      ];
+  }
 }
 function quandle_render_build_findingLines(outcome) {
   if (outcome.shown.length === 0) {

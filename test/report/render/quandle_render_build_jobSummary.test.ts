@@ -3,7 +3,8 @@
 // Written by Feudal Security, LLC (Quandle). MIT License, see LICENSE.
 //
 // Tests: src/report/render.ts → quandle_render_build_jobSummary
-// Also covers (private): quandle_render_build_displayUrl, quandle_render_build_findingLines,
+// Also covers (private): quandle_render_build_activeChecksLines,
+//   quandle_render_build_displayUrl, quandle_render_build_findingLines,
 //   quandle_render_compare_findingImportance, quandle_render_build_findingLine,
 //   quandle_render_build_ignoredLines, quandle_render_build_expiredDates
 //
@@ -11,8 +12,10 @@
 // nothing was scanned, the URL without its query, and findings most important
 // first (an expired ignore sorts with new), at most 100, with every untrusted field
 // escaped; ignored findings are listed apart by id and escaped reason, at most 100,
-// and a finding whose ignore expired is marked with the date.
-// Rules: ERR-4, FND-3, IGN-2, IGN-10, MOCK-2, OUT-1, TGT-10
+// and a finding whose ignore expired is marked with the date; and the summary ends with
+// how to turn on the exposed-file checks when the site is unverified, says in one line when
+// they ran, and says nothing about them otherwise.
+// Rules: ERR-4, FND-3, IGN-2, IGN-10, MOCK-2, OUT-1, OUT-13, TGT-10
 // ==========================================================================
 import { describe, expect, it } from 'vitest';
 import { MOCK_BANNER, quandle_render_build_jobSummary } from '../../../src/report/render';
@@ -24,6 +27,22 @@ import {
   buildScanResult,
   withNoIgnores,
 } from '../../helpers/builders';
+
+// A verification token of the right shape: qv_ and 32 lowercase hex characters. Not a secret.
+const TOKEN = `qv_${'0123456789abcdef'.repeat(2)}`;
+
+// OUT-13: the fixed section that ends the summary of an unverified site.
+const UNVERIFIED_SECTION = [
+  '',
+  '**Exposed-file checks did not run.** Quandle only requests files such as `/.env` and `/.git/HEAD` from a site that proves it belongs to this repository. To turn them on, serve a file at `/.well-known/quandle.txt` containing this line:',
+  '',
+  `\`${TOKEN}\``,
+  '',
+  'In Next.js, Vite and Astro projects that file is `public/.well-known/quandle.txt`.',
+].join('\n');
+
+// OUT-13: the one fixed line for a verified site.
+const RAN_LINE = 'Exposed-file checks ran: this site is verified for this repository.';
 
 describe('quandle_render_build_jobSummary', () => {
   it('[OUT-1] lists at most 100 findings and says how many more there are', () => {
@@ -283,6 +302,68 @@ describe('quandle_render_build_jobSummary', () => {
         summary.indexOf(id),
       );
       expect(order).toEqual([...order].sort((a, b) => a - b));
+    });
+  });
+
+  describe('active checks (OUT-13)', () => {
+    it('[OUT-13] ends the summary with the fixed section, the proof path and the token on its own line when active checks are unverified', () => {
+      const result = buildScanResult({
+        findings: [buildFinding()],
+        activeChecks: { kind: 'unverified', verificationToken: TOKEN },
+      });
+      const summary = quandle_render_build_jobSummary(...withNoIgnores(result));
+      expect(summary.endsWith(UNVERIFIED_SECTION)).toBe(true);
+      expect(summary.split('\n')).toContain(`\`${TOKEN}\``);
+    });
+
+    it('[OUT-13] puts the unverified section after the findings and the ignored findings', () => {
+      const shown = buildFinding({ id: 'qf_shown' });
+      const ignored = buildFinding({ id: 'qf_ignored' });
+      const result = buildScanResult({
+        findings: [shown, ignored],
+        activeChecks: { kind: 'unverified', verificationToken: TOKEN },
+      });
+      const outcome = buildIgnoreOutcome({
+        shown: [shown],
+        ignored: [{ finding: ignored, reason: 'Test reason' }],
+      });
+      const summary = quandle_render_build_jobSummary(result, outcome);
+      const section = summary.indexOf('**Exposed-file checks did not run.**');
+      expect(section).toBeGreaterThan(summary.indexOf('qf_shown'));
+      expect(section).toBeGreaterThan(summary.indexOf('qf_ignored'));
+    });
+
+    it('[OUT-13] carries exactly one line saying the exposed-file checks ran when active checks ran', () => {
+      const result = buildScanResult({ activeChecks: { kind: 'ran' } });
+      const summary = quandle_render_build_jobSummary(...withNoIgnores(result));
+      expect(summary.split('\n').filter((line) => line === RAN_LINE)).toHaveLength(1);
+      expect(summary.endsWith(`\n\n${RAN_LINE}`)).toBe(true);
+      expect(summary).not.toContain('did not run');
+    });
+
+    it('[OUT-13] says nothing about exposed-file checks when the engine sent no activeChecks', () => {
+      const summary = quandle_render_build_jobSummary(...withNoIgnores(buildScanResult()));
+      expect(summary).not.toContain('Exposed-file checks');
+      expect(summary).not.toContain('quandle.txt');
+    });
+
+    it('[OUT-13] says nothing about exposed-file checks in a mock summary', () => {
+      const summary = quandle_render_build_jobSummary(...withNoIgnores(buildScanResult({ isMock: true })));
+      expect(summary).not.toContain('Exposed-file checks');
+    });
+
+    it('[OUT-13] says nothing about exposed-file checks when nothing was scanned', () => {
+      const result = buildNotScannedResult('protected', 'the deploy is protected');
+      const summary = quandle_render_build_jobSummary(...withNoIgnores(result));
+      expect(summary).not.toContain('Exposed-file checks');
+    });
+
+    it('[FND-3] shows the token inside one code span that a backtick in it cannot close early', () => {
+      const result = buildScanResult({
+        activeChecks: { kind: 'unverified', verificationToken: 'qv_`[x](https://evil.example.com)' },
+      });
+      const summary = quandle_render_build_jobSummary(...withNoIgnores(result));
+      expect(summary.split('\n')).toContain("`qv_'[x](https://evil.example.com)`");
     });
   });
 });

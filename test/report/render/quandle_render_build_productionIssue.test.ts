@@ -13,7 +13,7 @@
 // Low, caps the list at 50 findings and 60,000 characters (counting every finding
 // left out), escapes untrusted text and never shows the URL's
 // query; ignored findings are left out and only counted.
-// Rules: FND-1, FND-3, IGN-2, IGN-10, MOCK-2, OUT-10, OUT-11, OUT-12, TGT-10
+// Rules: FND-1, FND-3, IGN-2, IGN-10, MOCK-2, OUT-10, OUT-11, OUT-12, OUT-13, TGT-10
 // ==========================================================================
 import { describe, expect, it } from 'vitest';
 import { ISSUE_MARKER, MOCK_BANNER, quandle_render_build_productionIssue } from '../../../src/report/render';
@@ -181,4 +181,19 @@ describe('quandle_render_build_productionIssue', () => {
       expect(line?.endsWith(' · ignore expired 2026-11-08')).toBe(true);
     });
   });
+
+  it.each([
+    ['unverified', { kind: 'unverified', verificationToken: `qv_${'0123456789abcdef'.repeat(2)}` }],
+    ['ran', { kind: 'ran' }],
+  ] as const)(
+    '[OUT-13] never mentions the exposed-file checks or the token in the issue when active checks are %s',
+    (_name, activeChecks) => {
+      const issue = quandle_render_build_productionIssue(
+        ...withNoIgnores(buildScanned([buildFinding()], { activeChecks })),
+      );
+      expect(issue).not.toContain('Exposed-file checks');
+      expect(issue).not.toContain('qv_');
+      expect(issue).not.toContain('quandle.txt');
+    },
+  );
 });
