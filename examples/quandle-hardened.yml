@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: quandle-ai/github_action@<full-commit-sha> # v1.0.0
+      - uses: quandle-ai/github_action@<full-commit-sha> # v1.1.0
         with:
           # Your production URL. Used by Scan now; deploys always scan their own URL.
           url: https://your-app.example.com
