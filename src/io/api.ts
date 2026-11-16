@@ -8,7 +8,7 @@
 // across a redirect. Reads at most
 // 2 MB within 60 seconds and turns the answer into a ScanResult, strictly: anything
 // unexpected is engine-error, never "0 findings". Never throws, never logs.
-// Rules: TGT-9, TRU-1 … TRU-5, TRU-7, TRU-8, FND-1, FND-2, FND-4, FND-6, ERR-2, ERR-4, MOCK-4
+// Rules: TGT-9, TRU-1 … TRU-5, TRU-7, TRU-8, FND-1, FND-2, FND-4, FND-6, FND-7, ERR-2, ERR-4, MOCK-4
 // ==========================================================================
 import { createHash } from 'node:crypto';
 import { SEVERITY_RANK } from '../scan/severity';
@@ -28,11 +28,11 @@ export const ENGINE_URL = 'https://api.quandle.ai/v1/scan';
 
 // TRU-1: the response shape this version of the Action understands (TRU-7). The engine sends the
 // fields an older Action would reject only to a caller that names this contract.
-const SCAN_CONTRACT = 2;
+const SCAN_CONTRACT = 3;
 
 // Builds the scan request from the target: only the fields allowed to leave GitHub (TRU-1).
 // production is the target's production decision (TGT-11), never guessed from the environment name.
-// Returns: url, environment (when known), production, bypassSecret (when set) and contract 2.
+// Returns: url, environment (when known), production, bypassSecret (when set) and contract 3.
 // Rules: TRU-1, TGT-9
 export function quandle_api_build_scanRequest(
   target: Extract<Target, { kind: 'scan' }>,
@@ -142,6 +142,7 @@ const FINDING_FIELD_SET: Readonly<Record<keyof Finding, true>> = {
   title: true,
   location: true,
   evidence: true,
+  behindProtection: true,
 };
 const FINDING_FIELDS: ReadonlySet<string> = new Set(Object.keys(FINDING_FIELD_SET));
 
@@ -215,18 +216,30 @@ function quandle_api_parse_findings(items: readonly unknown[]): Finding[] | unde
   return findings;
 }
 
-// One finding: exactly the known fields, non-empty text where required, a known severity and state.
+// One finding: exactly the known fields, non-empty text where required, a known severity and state,
+// and behindProtection only as exactly true.
 // Returns: the finding, or undefined when anything about it is wrong.
-// Rules: FND-1, FND-2, FND-4, FND-6
+// Rules: FND-1, FND-2, FND-4, FND-6, FND-7
 function quandle_api_parse_finding(item: unknown): Finding | undefined {
   if (!quandle_api_check_isRecordWithOnly(item, FINDING_FIELDS)) return undefined;
-  const { id, rule, title, location, severity, state, evidence } = item;
+  const { id, rule, title, location, severity, state, evidence, behindProtection } = item;
   const isText = quandle_api_check_isNonEmptyText;
   if (!isText(id) || !isText(rule) || !isText(title) || !isText(location)) return undefined;
   // FND-4: an unknown severity or state is an error, never a quiet "low".
   if (!quandle_api_check_isSeverity(severity) || !quandle_api_check_isFindingState(state)) return undefined;
   if (evidence !== undefined && typeof evidence !== 'string') return undefined;
-  return { id, rule, severity, state, title, location, ...(evidence === undefined ? {} : { evidence }) };
+  // FND-6: the mark is only ever true; false, text or null is malformed, never "not behind protection".
+  if (behindProtection !== undefined && behindProtection !== true) return undefined;
+  return {
+    id,
+    rule,
+    severity,
+    state,
+    title,
+    location,
+    ...(evidence === undefined ? {} : { evidence }),
+    ...(behindProtection === undefined ? {} : { behindProtection }),
+  };
 }
 
 // True for one of the four severities (FND-2), from the one severity ranking.

@@ -6,7 +6,7 @@
 // Owns the ONLY escaping functions (Markdown-safe, code-span-safe, log-safe).
 // Everything untrusted must pass through one of them before output.
 // Pure: no network, no @actions imports.
-// Rules: TGT-3, TGT-10, FND-1, FND-3, OUT-1, OUT-7 … OUT-13, ERR-4, IGN-2, IGN-10, MOCK-2
+// Rules: TGT-3, TGT-10, FND-1, FND-3, FND-7, OUT-1, OUT-7 … OUT-13, ERR-4, IGN-2, IGN-10, MOCK-2
 // ==========================================================================
 import { SEVERITY_RANK } from '../scan/severity';
 import type {
@@ -31,6 +31,8 @@ export const MAX_BODY_CHARACTERS = 60_000;
 const MORE_LINE_RESERVE = 100;
 
 const SUMMARY_HEADING = '## Quandle';
+// FND-7: our own fixed text for a finding on a deploy the public cannot open. Never engine text.
+const BEHIND_PROTECTION_LABEL = 'behind protection on this deployment, public once promoted';
 // OUT-13: the fixed texts about the exposed-file checks. Only the token between them is engine text.
 const ACTIVE_CHECKS_RAN_LINE = 'Exposed-file checks ran: this site is verified for this repository.';
 const ACTIVE_CHECKS_UNVERIFIED_LINE =
@@ -212,9 +214,10 @@ function quandle_render_build_displayUrl(url: string): string {
   }
 }
 
-// One bullet: severity · state · title · location · id (· evidence) (· ignore expired <date>).
+// One bullet: severity · state · title · location · id (· evidence) (· behind protection label)
+// (· ignore expired <date>).
 // Returns: the Markdown line, with every field escaped (severity and state too: FND-3).
-// Rules: OUT-1, FND-3, IGN-2
+// Rules: OUT-1, FND-3, FND-7, IGN-2
 function quandle_render_build_findingLine(finding: Finding, expiredDate?: string): string {
   const parts = [
     `**${quandle_render_escape_markdownText(finding.severity)}**`,
@@ -225,6 +228,7 @@ function quandle_render_build_findingLine(finding: Finding, expiredDate?: string
   ];
   if (finding.evidence !== undefined)
     parts.push(`evidence ${quandle_render_escape_codeSpan(finding.evidence)}`);
+  if (finding.behindProtection === true) parts.push(BEHIND_PROTECTION_LABEL);
   if (expiredDate !== undefined)
     parts.push(`ignore expired ${quandle_render_escape_markdownText(expiredDate)}`);
   return `- ${parts.join(' · ')}`;
