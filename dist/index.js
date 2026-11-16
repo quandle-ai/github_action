@@ -30367,7 +30367,7 @@ function quandle_severity_check_isAtOrAboveFailOn(finding, failOn) {
 
 // src/io/api.ts
 var ENGINE_URL = "https://api.quandle.ai/v1/scan";
-var SCAN_CONTRACT = 2;
+var SCAN_CONTRACT = 3;
 function quandle_api_build_scanRequest(target, bypassSecret) {
   return {
     url: target.url,
@@ -30419,7 +30419,8 @@ var FINDING_FIELD_SET = {
   state: true,
   title: true,
   location: true,
-  evidence: true
+  evidence: true,
+  behindProtection: true
 };
 var FINDING_FIELDS = new Set(Object.keys(FINDING_FIELD_SET));
 var FINDING_STATE_SET = {
@@ -30472,12 +30473,22 @@ function quandle_api_parse_findings(items) {
 }
 function quandle_api_parse_finding(item) {
   if (!quandle_api_check_isRecordWithOnly(item, FINDING_FIELDS)) return void 0;
-  const { id, rule, title, location, severity, state, evidence } = item;
+  const { id, rule, title, location, severity, state, evidence, behindProtection } = item;
   const isText = quandle_api_check_isNonEmptyText;
   if (!isText(id) || !isText(rule) || !isText(title) || !isText(location)) return void 0;
   if (!quandle_api_check_isSeverity(severity) || !quandle_api_check_isFindingState(state)) return void 0;
   if (evidence !== void 0 && typeof evidence !== "string") return void 0;
-  return { id, rule, severity, state, title, location, ...evidence === void 0 ? {} : { evidence } };
+  if (behindProtection !== void 0 && behindProtection !== true) return void 0;
+  return {
+    id,
+    rule,
+    severity,
+    state,
+    title,
+    location,
+    ...evidence === void 0 ? {} : { evidence },
+    ...behindProtection === void 0 ? {} : { behindProtection }
+  };
 }
 function quandle_api_check_isSeverity(value) {
   return typeof value === "string" && Object.hasOwn(SEVERITY_RANK, value);
@@ -30823,6 +30834,7 @@ var MAX_COMMENT_FINDINGS = 50;
 var MAX_BODY_CHARACTERS = 6e4;
 var MORE_LINE_RESERVE = 100;
 var SUMMARY_HEADING = "## Quandle";
+var BEHIND_PROTECTION_LABEL = "behind protection on this deployment, public once promoted";
 var ACTIVE_CHECKS_RAN_LINE = "Exposed-file checks ran: this site is verified for this repository.";
 var ACTIVE_CHECKS_UNVERIFIED_LINE = "**Exposed-file checks did not run.** Quandle only requests files such as `/.env` and `/.git/HEAD` from a site that proves it belongs to this repository. To turn them on, serve a file at `/.well-known/quandle.txt` containing this line:";
 var ACTIVE_CHECKS_FOLDER_LINE = "In Next.js, Vite and Astro projects that file is `public/.well-known/quandle.txt`.";
@@ -30932,6 +30944,7 @@ function quandle_render_build_findingLine(finding, expiredDate) {
   ];
   if (finding.evidence !== void 0)
     parts.push(`evidence ${quandle_render_escape_codeSpan(finding.evidence)}`);
+  if (finding.behindProtection === true) parts.push(BEHIND_PROTECTION_LABEL);
   if (expiredDate !== void 0)
     parts.push(`ignore expired ${quandle_render_escape_markdownText(expiredDate)}`);
   return `- ${parts.join(" \xB7 ")}`;

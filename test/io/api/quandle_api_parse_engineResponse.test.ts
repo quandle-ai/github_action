@@ -11,8 +11,9 @@
 // letters, digits, `_` or `-`, or any malformed finding is engine-error, never
 // "0 findings"; every not-scanned outcome shows our own fixed
 // reason, never engine text; url and environment come from our request; and activeChecks
-// is accepted only as ran, or as unverified with a well-formed verification token.
-// Rules: FND-4, FND-6, TRU-7
+// is accepted only as ran, or as unverified with a well-formed verification token; a finding's
+// behindProtection is kept when it is exactly true, and any other value is engine-error.
+// Rules: FND-4, FND-6, FND-7, TRU-7
 // ==========================================================================
 import { describe, expect, it } from 'vitest';
 import { quandle_api_parse_engineResponse } from '../../../src/io/api';
@@ -22,7 +23,7 @@ const REQUEST: ScanRequest = {
   url: 'https://preview.example.com/',
   environment: 'Preview',
   production: false,
-  contract: 2,
+  contract: 3,
 };
 // A verification token of the right shape: qv_ and 32 lowercase hex characters. Not a secret.
 const TOKEN = `qv_${'0123456789abcdef'.repeat(2)}`;
@@ -87,7 +88,7 @@ describe('quandle_api_parse_engineResponse', () => {
       const result = quandle_api_parse_engineResponse(answer({ status: 'scanned', findings: [] }), {
         url: 'https://app.example.com/',
         production: true,
-        contract: 2,
+        contract: 3,
       });
       expect(result).not.toHaveProperty('environment');
     });
@@ -310,6 +311,33 @@ describe('quandle_api_parse_engineResponse', () => {
     it('[FND-6] turns a finding with an extra field into engine-error', () => {
       expect(parse({ status: 'scanned', findings: [rawFinding({ cvss: 9.8 })] })).toEqual(ENGINE_ERROR);
     });
+
+    it('[FND-7] keeps behindProtection true on a finding, with every other field as the engine sent it', () => {
+      const finding = rawFinding({ evidence: 'FAKE…REDACTED', behindProtection: true });
+      expect(parse({ status: 'scanned', findings: [finding] })).toMatchObject({
+        status: 'scanned',
+        findings: [finding],
+      });
+    });
+
+    it('[FND-7] leaves behindProtection out of a finding the engine sent without it', () => {
+      const result = parse({ status: 'scanned', findings: [rawFinding()] });
+      expect(result.findings[0]).not.toHaveProperty('behindProtection');
+    });
+
+    it.each([
+      ['false', false],
+      ['the text "true"', 'true'],
+      ['null', null],
+      ['the number 1', 1],
+    ])(
+      '[FND-6] turns a finding whose behindProtection is %s into engine-error',
+      (_label, behindProtection) => {
+        expect(parse({ status: 'scanned', findings: [rawFinding({ behindProtection })] })).toEqual(
+          ENGINE_ERROR,
+        );
+      },
+    );
 
     it('[FND-6] turns a finding that is not an object into engine-error', () => {
       expect(parse({ status: 'scanned', findings: ['qf_test01'] })).toEqual(ENGINE_ERROR);

@@ -6,7 +6,7 @@
 // Mirrors the Quandle engine request/response contract. Built so illegal states
 // cannot be written down (proved in test/types/types.test.ts). Everything shared
 // is read-only (FND-5). No runtime code, imports nothing.
-// Rules: FND-1, FND-2, FND-5, OUT-6, SEV-1, MOCK-1, IO-1, ERR-4, IGN-1, IGN-2, IGN-10
+// Rules: FND-1, FND-2, FND-5, FND-7, OUT-6, SEV-1, MOCK-1, IO-1, ERR-4, IGN-1, IGN-2, IGN-10
 // ==========================================================================
 
 // FND-2. The one list of severities; FailOn is derived from it.
@@ -28,6 +28,8 @@ export interface Finding {
   readonly location: string;
   // Engine-redacted evidence (FND-3). Never shown in any other form.
   readonly evidence?: string;
+  // FND-7: found on a deploy the public cannot open. Only ever true; absent otherwise.
+  readonly behindProtection?: true;
 }
 
 // What a scan request can come back as (from the engine, or the mock). Everything except
@@ -72,8 +74,8 @@ export interface ScanRequest {
   // TRU-1: the same production decision as TGT-11, never from the environment name (TGT-9).
   readonly production: boolean;
   readonly bypassSecret?: string;
-  // TRU-1: the response shape this version of the Action understands (TRU-7). Always 2.
-  readonly contract: 2;
+  // TRU-1: the response shape this version of the Action understands (TRU-7). Always 3.
+  readonly contract: 3;
 }
 
 // OUT-6: every value the `status` output can take.
