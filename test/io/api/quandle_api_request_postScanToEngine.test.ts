@@ -26,7 +26,7 @@ const REQUEST: ScanRequest = {
   environment: 'Preview',
   production: false,
   bypassSecret: 'FAKE_BYPASS',
-  contract: 2,
+  contract: 3,
 };
 const MAX_BYTES = 2 * 1024 * 1024;
 const ENGINE_ERROR_REASON = 'the Quandle engine could not complete the scan';
@@ -76,7 +76,7 @@ describe('quandle_api_request_postScanToEngine', () => {
     it('[TRU-4] calls only https://api.quandle.ai/v1/scan, whatever the request URL says', async () => {
       const engine = buildFakeEngine({ respond: engineAnswer(CLEAN_SCAN) });
       await quandle_api_request_postScanToEngine(
-        { url: 'https://evil.example.com/v1/scan', production: false, contract: 2 },
+        { url: 'https://evil.example.com/v1/scan', production: false, contract: 3 },
         engine,
       );
       expect(engine.requests.map((request) => request.url)).toEqual(['https://api.quandle.ai/v1/scan']);
@@ -120,13 +120,13 @@ describe('quandle_api_request_postScanToEngine', () => {
       expect(new Headers(engine.requests[0]?.init.headers).has('authorization')).toBe(false);
     });
 
-    it('[TRU-2] sends x-amz-content-sha256 as the sha256 of the body: 14e53593… for this request', async () => {
+    it('[TRU-2] sends x-amz-content-sha256 as the sha256 of the body: 70db1af5… for this request', async () => {
       const engine = buildFakeEngine({ respond: engineAnswer(CLEAN_SCAN) });
       await quandle_api_request_postScanToEngine(REQUEST, engine);
       const headers = new Headers(engine.requests[0]?.init.headers);
       // Computed independently (sha256sum) over the exact JSON of REQUEST.
       expect(headers.get('x-amz-content-sha256')).toBe(
-        '14e53593b7bf225ae5976da351c56f1066c27552d89b1cb13c51c19db1b5cc1b',
+        '70db1af5c01bac70cba78dc077205a889708174ef9d1d5f677c406f9c9fb1772',
       );
     });
 
@@ -263,7 +263,7 @@ describe('quandle_api_request_postScanToEngine', () => {
 
     it('[TGT-1] leaves the environment out of the result when the request has none, never guessing one', async () => {
       const result = await quandle_api_request_postScanToEngine(
-        { url: 'https://app.example.com/', production: false, contract: 2 },
+        { url: 'https://app.example.com/', production: false, contract: 3 },
         buildFakeEngine(),
       );
       expect(result).not.toHaveProperty('environment');

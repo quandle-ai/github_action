@@ -6,8 +6,9 @@
 // Also covers (private): quandle_mock_build_scenarioFindings
 //
 // Proves every mock result is marked as a mock, each scenario has the right
-// findings, only the critical scenario fails the job, and mock evidence is fake.
-// Rules: FND-1, FND-3, MOCK-1, MOCK-2, MOCK-3
+// findings, only the critical scenario fails the job, mock evidence is fake, and no mock
+// finding is ever marked behind protection.
+// Rules: FND-1, FND-3, FND-7, MOCK-1, MOCK-2, MOCK-3
 // ==========================================================================
 import { describe, expect, it } from 'vitest';
 import { quandle_mock_build_scanResult } from '../../../src/scan/mock';
@@ -16,6 +17,11 @@ import { buildIgnoreOutcome } from '../../helpers/builders';
 import { ALL_SCENARIOS } from '../../helpers/mock-scenarios';
 
 describe('quandle_mock_build_scanResult', () => {
+  it.each(ALL_SCENARIOS)('[FND-7] never marks a finding of the %s scenario behind protection', (scenario) => {
+    const { findings } = quandle_mock_build_scanResult(scenario, 'https://app.example.com/');
+    expect(findings.filter((finding) => 'behindProtection' in finding)).toEqual([]);
+  });
+
   it.each(ALL_SCENARIOS)('[MOCK-2] marks the %s scenario result as a mock', (scenario) => {
     expect(quandle_mock_build_scanResult(scenario, 'https://app.example.com/').isMock).toBe(true);
   });

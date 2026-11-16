@@ -14,8 +14,9 @@
 // escaped; ignored findings are listed apart by id and escaped reason, at most 100,
 // and a finding whose ignore expired is marked with the date; and the summary ends with
 // how to turn on the exposed-file checks when the site is unverified, says in one line when
-// they ran, and says nothing about them otherwise.
-// Rules: ERR-4, FND-3, IGN-2, IGN-10, MOCK-2, OUT-1, OUT-13, TGT-10
+// they ran, and says nothing about them otherwise; a finding behind protection carries a fixed
+// label on its line and nothing else changes.
+// Rules: ERR-4, FND-3, FND-7, IGN-2, IGN-10, MOCK-2, OUT-1, OUT-13, TGT-10
 // ==========================================================================
 import { describe, expect, it } from 'vitest';
 import { MOCK_BANNER, quandle_render_build_jobSummary } from '../../../src/report/render';
@@ -43,6 +44,18 @@ const UNVERIFIED_SECTION = [
 
 // OUT-13: the one fixed line for a verified site.
 const RAN_LINE = 'Exposed-file checks ran: this site is verified for this repository.';
+
+// FND-7: the fixed label, with the separator before it.
+const BEHIND_PROTECTION = ' · behind protection on this deployment, public once promoted';
+
+// FND-7: one finding per state and severity, in no particular order.
+const MIXED_FINDINGS: readonly Finding[] = [
+  buildFinding({ id: 'qf_low_existing', severity: 'low', state: 'existing' }),
+  buildFinding({ id: 'qf_critical_new', severity: 'critical', state: 'new' }),
+  buildFinding({ id: 'qf_medium_present', severity: 'medium', state: 'already-present' }),
+  buildFinding({ id: 'qf_high_resolved', severity: 'high', state: 'resolved' }),
+  buildFinding({ id: 'qf_high_new', severity: 'high', state: 'new', evidence: 'FAKE…REDACTED' }),
+];
 
 describe('quandle_render_build_jobSummary', () => {
   it('[OUT-1] lists at most 100 findings and says how many more there are', () => {
@@ -364,6 +377,35 @@ describe('quandle_render_build_jobSummary', () => {
       });
       const summary = quandle_render_build_jobSummary(...withNoIgnores(result));
       expect(summary.split('\n')).toContain("`qv_'[x](https://evil.example.com)`");
+    });
+  });
+
+  describe('behind protection (FND-7)', () => {
+    it('[FND-7] marks a finding carrying behindProtection with "behind protection on this deployment, public once promoted"', () => {
+      const finding = buildFinding({ id: 'qf_walled', behindProtection: true });
+      const summary = quandle_render_build_jobSummary(
+        ...withNoIgnores(buildScanResult({ findings: [finding] })),
+      );
+      expect(summary).toContain(`\`qf_walled\`${BEHIND_PROTECTION}`);
+    });
+
+    it('[FND-7] shows no behind-protection label on a finding without behindProtection', () => {
+      const finding = buildFinding({ id: 'qf_public' });
+      const summary = quandle_render_build_jobSummary(
+        ...withNoIgnores(buildScanResult({ findings: [finding] })),
+      );
+      expect(summary).not.toContain('behind protection');
+    });
+
+    it('[FND-7] lists the same findings in the same order with the same severity and state as without the mark', () => {
+      const findings = MIXED_FINDINGS;
+      const marked = findings.map((finding) => ({ ...finding, behindProtection: true as const }));
+      const plain = quandle_render_build_jobSummary(...withNoIgnores(buildScanResult({ findings })));
+      const withMark = quandle_render_build_jobSummary(
+        ...withNoIgnores(buildScanResult({ findings: marked })),
+      );
+      expect(withMark.split(BEHIND_PROTECTION).join('')).toBe(plain);
+      expect(withMark.split(BEHIND_PROTECTION)).toHaveLength(findings.length + 1);
     });
   });
 });

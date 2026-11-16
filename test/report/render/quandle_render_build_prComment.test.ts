@@ -13,8 +13,9 @@
 // section, caps the list at 50 findings and 60,000 characters (counting every
 // finding left out), escapes untrusted text, never shows the URL's
 // query, and is the same text for the same result; ignored findings are left out
-// and only counted.
-// Rules: FND-1, FND-3, IGN-10, MOCK-2, OUT-7, OUT-8, OUT-9, OUT-13, TGT-10
+// and only counted; a finding behind protection carries a fixed label on its line and nothing
+// else changes.
+// Rules: FND-1, FND-3, FND-7, IGN-10, MOCK-2, OUT-7, OUT-8, OUT-9, OUT-13, TGT-10
 // ==========================================================================
 import { describe, expect, it } from 'vitest';
 import { COMMENT_MARKER, MOCK_BANNER, quandle_render_build_prComment } from '../../../src/report/render';
@@ -29,6 +30,18 @@ import {
 type ScannedResult = Extract<ScanResult, { status: 'scanned' }>;
 
 const NEWLINE = String.fromCharCode(10);
+
+// FND-7: the fixed label, with the separator before it.
+const BEHIND_PROTECTION = ' · behind protection on this deployment, public once promoted';
+
+// FND-7: one finding per state and severity, in no particular order.
+const MIXED_FINDINGS: readonly Finding[] = [
+  buildFinding({ id: 'qf_low_existing', severity: 'low', state: 'existing' }),
+  buildFinding({ id: 'qf_critical_new', severity: 'critical', state: 'new' }),
+  buildFinding({ id: 'qf_medium_present', severity: 'medium', state: 'already-present' }),
+  buildFinding({ id: 'qf_high_resolved', severity: 'high', state: 'resolved' }),
+  buildFinding({ id: 'qf_high_new', severity: 'high', state: 'new', evidence: 'FAKE…REDACTED' }),
+];
 
 function buildScanned(findings: readonly Finding[], overrides: Partial<ScannedResult> = {}): ScannedResult {
   return { status: 'scanned', url: 'https://preview.example.com/', findings, isMock: false, ...overrides };
@@ -294,4 +307,27 @@ describe('quandle_render_build_prComment', () => {
       expect(comment).not.toContain('quandle.txt');
     },
   );
+
+  describe('behind protection (FND-7)', () => {
+    it('[FND-7] marks a new finding carrying behindProtection with "behind protection on this deployment, public once promoted"', () => {
+      const finding = buildFinding({ id: 'qf_walled', behindProtection: true });
+      const body = quandle_render_build_prComment(...withNoIgnores(buildScanned([finding])));
+      expect(body).toContain(`\`qf_walled\`${BEHIND_PROTECTION}`);
+    });
+
+    it('[FND-7] shows no behind-protection label on a finding without behindProtection', () => {
+      const body = quandle_render_build_prComment(
+        ...withNoIgnores(buildScanned([buildFinding({ id: 'qf_public' })])),
+      );
+      expect(body).not.toContain('behind protection');
+    });
+
+    it('[FND-7] lists the same findings in the same sections and order as without the mark', () => {
+      const marked = MIXED_FINDINGS.map((finding) => ({ ...finding, behindProtection: true as const }));
+      const plain = quandle_render_build_prComment(...withNoIgnores(buildScanned(MIXED_FINDINGS)));
+      const withMark = quandle_render_build_prComment(...withNoIgnores(buildScanned(marked)));
+      expect(withMark.split(BEHIND_PROTECTION).join('')).toBe(plain);
+      expect(withMark).toContain(BEHIND_PROTECTION);
+    });
+  });
 });

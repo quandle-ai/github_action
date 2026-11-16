@@ -9,7 +9,7 @@
 // Every `@ts-expect-error` line MUST fail to compile: if a type is ever loosened,
 // that line starts compiling, the directive becomes unused, and `npm run typecheck`
 // fails. The runtime assertions only confirm the legal counterparts.
-// Rules: ERR-4, FND-2, FND-5, IGN-1, IO-1, MOCK-1, OUT-6, SEV-1, TRU-1, TRU-7
+// Rules: ERR-4, FND-2, FND-5, FND-7, IGN-1, IO-1, MOCK-1, OUT-6, SEV-1, TRU-1, TRU-7
 // ==========================================================================
 import { describe, expect, it } from 'vitest';
 import type { ActionRuntime } from '../../src/main';
@@ -116,18 +116,25 @@ describe('src/types.ts', () => {
     };
     const url = 'https://app.example.com/';
     // @ts-expect-error TRU-1: no source code (or anything else) can be put in a scan request.
-    const withSource: ScanRequest = { url, production: false, contract: 2, sourceCode: 'FAKE' };
+    const withSource: ScanRequest = { url, production: false, contract: 3, sourceCode: 'FAKE' };
     expect(Object.keys(fields)).toEqual(['url', 'environment', 'production', 'bypassSecret', 'contract']);
     expect(withSource.url).toBe('https://app.example.com/');
   });
 
-  it('[TRU-1] does not allow a scan request for any contract but 2', () => {
+  it('[TRU-1] does not allow a scan request for any contract but 3', () => {
     const url = 'https://app.example.com/';
-    // @ts-expect-error TRU-1: this Action understands contract 2 and asks for nothing else.
-    const older: ScanRequest = { url, production: false, contract: 1 };
+    // @ts-expect-error TRU-1: this Action understands contract 3 and asks for nothing else.
+    const older: ScanRequest = { url, production: false, contract: 2 };
     // @ts-expect-error TRU-1: a scan request always names its contract.
     const unnamed: ScanRequest = { url, production: false };
     expect([older.url, unnamed.url]).toEqual([url, url]);
+  });
+
+  it('[FND-7] allows a finding to be marked behind protection only with true', () => {
+    const marked: Finding = { ...buildFinding(), behindProtection: true };
+    // @ts-expect-error FND-7: behindProtection is only ever true; an unmarked finding leaves it out.
+    const unmarked: Finding = { ...buildFinding(), behindProtection: false };
+    expect([marked.behindProtection, unmarked.behindProtection]).toEqual([true, false]);
   });
 
   it('[TRU-7] gives a verification token only to unverified active checks, and active checks only to a scan', () => {

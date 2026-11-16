@@ -6,7 +6,7 @@
 // Also covers (private): none
 //
 // Proves the scan request carries only url, environment (when known), production,
-// bypassSecret (when set) and contract 2, and that production is the target's production
+// bypassSecret (when set) and contract 3, and that production is the target's production
 // decision (true for Scan now and production deploys), never the environment name.
 // Rules: TGT-9, TRU-1
 // ==========================================================================
@@ -35,14 +35,14 @@ describe('quandle_api_build_scanRequest', () => {
       environment: 'Preview',
       production: false,
       bypassSecret: 'FAKE_BYPASS',
-      contract: 2,
+      contract: 3,
     });
   });
 
-  it('[TRU-1] always sends contract 2, with or without an environment or a bypass secret', () => {
+  it('[TRU-1] always sends contract 3, with or without an environment or a bypass secret', () => {
     const { environment: _unused, ...withoutEnvironment } = buildTarget();
-    expect(quandle_api_build_scanRequest(withoutEnvironment, undefined).contract).toBe(2);
-    expect(quandle_api_build_scanRequest(buildTarget(), 'FAKE_BYPASS').contract).toBe(2);
+    expect(quandle_api_build_scanRequest(withoutEnvironment, undefined).contract).toBe(3);
+    expect(quandle_api_build_scanRequest(buildTarget(), 'FAKE_BYPASS').contract).toBe(3);
   });
 
   it('[TRU-1] leaves environment out when the deploy has none', () => {
