@@ -45,6 +45,8 @@ const UNVERIFIED_SECTION = [
 // OUT-13: the one fixed line for a verified site.
 const RAN_LINE = 'Exposed-file checks ran: this site is verified for this repository.';
 
+const NEWLINE = String.fromCharCode(10);
+
 // FND-7: the fixed label, with the separator before it.
 const BEHIND_PROTECTION = ' · behind protection on this deployment, public once promoted';
 
@@ -406,6 +408,40 @@ describe('quandle_render_build_jobSummary', () => {
       );
       expect(withMark.split(BEHIND_PROTECTION).join('')).toBe(plain);
       expect(withMark.split(BEHIND_PROTECTION)).toHaveLength(findings.length + 1);
+    });
+
+    it('[FND-7] keeps the order of a list mixing marked and unmarked findings exactly as without the marks', () => {
+      // Marked ones would come first in importance and in input order, so any sort on the mark shows.
+      const mixed = MIXED_FINDINGS.map((finding, index) =>
+        index % 2 === 0 ? { ...finding, behindProtection: true as const } : finding,
+      );
+      const tied = [
+        buildFinding({ id: 'qf_tie_marked', behindProtection: true }),
+        buildFinding({ id: 'qf_tie_public' }),
+      ];
+      const idOrder = (findings: readonly Finding[]): string[] =>
+        quandle_render_build_jobSummary(...withNoIgnores(buildScanResult({ findings })))
+          .split(NEWLINE)
+          .flatMap((line) => line.match(/`(qf_[a-z_]+)`/)?.[1] ?? []);
+      const unmarked = (findings: readonly Finding[]): Finding[] =>
+        findings.map(({ behindProtection: _mark, ...finding }) => finding);
+      expect(idOrder(mixed)).toEqual(idOrder(unmarked(mixed)));
+      expect(idOrder(mixed)).toEqual([
+        'qf_critical_new',
+        'qf_high_new',
+        'qf_high_resolved',
+        'qf_medium_present',
+        'qf_low_existing',
+      ]);
+      expect(idOrder(tied)).toEqual(['qf_tie_marked', 'qf_tie_public']);
+    });
+
+    it('[FND-7] lists an ignored finding carrying behindProtection by id and reason only, with no label', () => {
+      const finding = buildFinding({ behindProtection: true });
+      const outcome = buildIgnoreOutcome({ ignored: [{ finding, reason: 'Public by design' }] });
+      const summary = quandle_render_build_jobSummary(buildScanResult({ findings: [finding] }), outcome);
+      expect(summary).toContain(`**Ignored (1)**${NEWLINE}- \`qf_test01\` · Public by design`);
+      expect(summary).not.toContain('behind protection');
     });
   });
 });
