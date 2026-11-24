@@ -60,6 +60,14 @@ export interface IssueRef {
   readonly authorLogin: string;
 }
 
+// PUB-3: one SARIF file for code scanning: the scanned commit, the full ref (refs/heads/<branch>)
+// and the file's text, before gzip and base64.
+export interface SarifUpload {
+  readonly commitSha: string;
+  readonly ref: string;
+  readonly sarif: string;
+}
+
 // A GitHub call's result: the value, or our own one-line reason it failed.
 export type GitHubResult<T> =
   { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reason: string };
@@ -77,6 +85,8 @@ export interface GitHubApi {
   readIgnoreFile(): Promise<GitHubResult<string | undefined>>;
   // TGT-11: the commit at the head of the repository's default branch.
   readDefaultBranchHeadSha(): Promise<GitHubResult<string>>;
+  // PUB-3: uploads one SARIF file to the repository's code scanning alerts.
+  uploadSarif(upload: SarifUpload): Promise<GitHubResult<void>>;
 }
 
 // Builds the GitHub API for one repository on top of an Octokit instance.
@@ -211,6 +221,8 @@ export function quandle_github_build_api(octokit: OctokitApi, repository: Reposi
         const sha = quandle_github_read_textField(head.data, ['commit', 'sha']);
         return sha === undefined ? { ok: false, reason: UNEXPECTED_RESPONSE } : { ok: true, value: sha };
       }),
+    // Signature-only stub: the upload is not written yet (PUB-3).
+    uploadSarif: async () => ({ ok: false, reason: 'not implemented' }),
     readIgnoreFile: () =>
       quandle_github_call_safely<string | undefined>('contents: read', async () => {
         try {

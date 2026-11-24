@@ -13,9 +13,11 @@
 // Octokit too, which wraps timeouts and network failures as status 500.
 // Covers the production issue calls too: open issues only, PRs skipped. And the
 // ignore file: read from the default branch (no ref), 404 means no file, over 1 MB
-// or any other shape is a failure.
-// Rules: IGN-9, OUT-2, OUT-7, OUT-9, OUT-10, OUT-12, PRM-3, TGT-11
+// or any other shape is a failure. And the SARIF upload: sent to this repository's code scanning
+// as gzip then base64, with a 403 that names the optional permission.
+// Rules: IGN-9, OUT-2, OUT-7, OUT-9, OUT-10, OUT-12, PRM-3, PRM-4, PUB-3, TGT-11
 // ==========================================================================
+import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { quandle_github_build_api } from '../../../src/io/github';
 import { LEAKY_ERROR_TEXT } from '../../helpers/fake-runtime';
@@ -35,6 +37,7 @@ const UPDATE_ROUTE = 'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}';
 const ISSUES_ROUTE = 'GET /repos/{owner}/{repo}/issues';
 const CREATE_ISSUE_ROUTE = 'POST /repos/{owner}/{repo}/issues';
 const UPDATE_ISSUE_ROUTE = 'PATCH /repos/{owner}/{repo}/issues/{issue_number}';
+const SARIF_ROUTE = 'POST /repos/{owner}/{repo}/code-scanning/sarifs';
 
 function rawComment(id: number, body: unknown, login: unknown): unknown {
   return { id, body, user: login === undefined ? null : { login } };
@@ -578,6 +581,59 @@ describe('quandle_github_build_api', () => {
         const request = call.parameters.request as { signal?: unknown } | undefined;
         expect(request?.signal).toBeInstanceOf(AbortSignal);
       }
+    });
+  });
+
+  describe('uploadSarif', () => {
+    const UPLOAD = {
+      commitSha: 'deploy-sha',
+      ref: 'refs/heads/main',
+      sarif: '{"version":"2.1.0","runs":[]}',
+    };
+    const forbidden = (): unknown => ({
+      status: 403,
+      message: `request failed: ${LEAKY_ERROR_TEXT}`,
+      response: { data: LEAKY_ERROR_TEXT },
+    });
+
+    it('[PUB-3] reports ok when GitHub accepts the upload', async () => {
+      const octokit = buildFakeOctokit({ responses: { [SARIF_ROUTE]: { id: 'FAKE_SARIF_ID' } } });
+      const result = await quandle_github_build_api(octokit, REPOSITORY).uploadSarif(UPLOAD);
+      expect(result).toEqual({ ok: true, value: undefined });
+    });
+
+    it('[PUB-3] posts the file to the code scanning uploads of this repository, with the commit and the ref', async () => {
+      const octokit = buildFakeOctokit();
+      await quandle_github_build_api(octokit, REPOSITORY).uploadSarif(UPLOAD);
+      expect(octokit.calls).toHaveLength(1);
+      expect(octokit.calls[0]).toMatchObject({
+        route: SARIF_ROUTE,
+        parameters: { owner: 'acme', repo: 'shop', commit_sha: 'deploy-sha', ref: 'refs/heads/main' },
+      });
+    });
+
+    it('[PUB-3] sends the file as gzip then base64, which decodes to exactly the given text', async () => {
+      const octokit = buildFakeOctokit();
+      await quandle_github_build_api(octokit, REPOSITORY).uploadSarif(UPLOAD);
+      const sent = octokit.calls[0]?.parameters.sarif;
+      expect(typeof sent).toBe('string');
+      expect(gunzipSync(Buffer.from(String(sent), 'base64')).toString('utf8')).toBe(UPLOAD.sarif);
+    });
+
+    it('[PUB-3] passes a timeout signal with the upload', async () => {
+      const octokit = buildFakeOctokit();
+      await quandle_github_build_api(octokit, REPOSITORY).uploadSarif(UPLOAD);
+      const request = octokit.calls[0]?.parameters.request as { signal?: unknown } | undefined;
+      expect(request?.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('[PRM-4] reports a 403 with a hint that names security-events: write, never the response', async () => {
+      const octokit = buildFakeOctokit({ thrown: forbidden() });
+      const result = await quandle_github_build_api(octokit, REPOSITORY).uploadSarif(UPLOAD);
+      expect(result).toEqual({
+        ok: false,
+        reason: 'GitHub API returned 403 (does the workflow grant `security-events: write`?)',
+      });
     });
   });
 });
