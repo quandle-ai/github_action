@@ -13,11 +13,15 @@
 // by one fixed relative placeholder path and never by an https URL; that every
 // output says where the detail is, or how to turn it on when the upload was not accepted; and
 // that a failed upload only warns. A repository whose visibility the event does not state
-// counts as public.
+// counts as public. Only a production deploy uploads: a preview deploy never does, says the
+// detail follows the next production scan, and never warns. A query string or fragment in a
+// location never reaches the file.
 // Pinning tests (they pass before the rules are implemented, and must be proven with a planted
 // bug once they are): the three "private repository" tests, the "header finding" tests, the
 // "mock" tests, "no finding is withheld", "the only withheld finding is ignored", "lists no
-// withheld finding" and "outputs".
+// withheld finding" and "outputs". Also pinning: "whose commit is the head of the default
+// branch", "never warns about the upload on a preview deploy" and "still withholds ... on a
+// preview deploy".
 // Rules: PUB-1, PUB-2, PUB-3, PUB-4, PUB-5
 // ==========================================================================
 import { describe, expect, it } from 'vitest';
@@ -36,23 +40,36 @@ const UPLOADED_LINE =
   "Location and evidence for secret and exposed-file findings are in this repository's code scanning alerts (Security tab), visible only to people with write access.";
 const WITHHELD_LINE =
   "Location and evidence for secret and exposed-file findings are withheld because this repository is public. To see them in code scanning alerts, add `security-events: write` to the workflow's permissions.";
+const PREVIEW_LINE =
+  "Location and evidence for secret and exposed-file findings are withheld because this repository is public. They reach this repository's code scanning alerts (Security tab), visible only to people with write access, after the next production scan, if the workflow grants `security-events: write`.";
 const MISSING_PERMISSION = 'GitHub API returned 403 (does the workflow grant `security-events: write`?)';
 
 const PUBLIC_REPOSITORY = { private: false, default_branch: 'main' };
 const PRIVATE_REPOSITORY = { private: true, default_branch: 'main' };
 const OPEN_PR = { number: 7, isOpen: true, headSha: 'deploy-sha' };
 
-// A preview deploy of a repository with this `repository` object in its event (none when undefined).
-function deployEvent(repository?: unknown): EventContext {
+// A production deploy (unless told otherwise) of a repository with this `repository` object in its
+// event (none when undefined).
+function deployEvent(repository?: unknown, isProduction = true): EventContext {
   return {
     eventName: 'deployment_status',
     sha: 'deploy-sha',
     payload: {
       deployment_status: { state: 'success', environment_url: 'https://preview.example.com/' },
-      deployment: { sha: 'deploy-sha', environment: 'Preview' },
+      deployment: {
+        sha: 'deploy-sha',
+        environment: 'Production',
+        ...(isProduction ? { production_environment: true } : {}),
+      },
       ...(repository === undefined ? {} : { repository }),
     },
   };
+}
+
+// A deploy that is not a production deploy: the payload does not say so, and its commit is not the
+// default branch's head.
+function previewEvent(repository: unknown): EventContext {
+  return deployEvent(repository, false);
 }
 
 // Scan now: reported in the production issue.
@@ -304,6 +321,20 @@ describe('quandle_main_run_action', () => {
       expect(runtime.github.sarifUploads).toHaveLength(1);
     });
 
+    it('[PUB-3] uploads nothing for a preview deploy', async () => {
+      const runtime = await runWith(ALL_FINDINGS, { event: previewEvent(PUBLIC_REPOSITORY) });
+      expect(readSummary(runtime)).toContain('qf_secret01');
+      expect(runtime.github.calls).not.toContain('uploadSarif');
+    });
+
+    it('[PUB-3] uploads for a deploy whose commit is the head of the default branch', async () => {
+      const runtime = await runWith(ALL_FINDINGS, {
+        event: previewEvent(PUBLIC_REPOSITORY),
+        github: { defaultBranchHeadSha: 'deploy-sha' },
+      });
+      expect(runtime.github.sarifUploads).toHaveLength(1);
+    });
+
     it('[PUB-3] uploads nothing when no finding is withheld', async () => {
       const runtime = await runWith([HEADER]);
       expect(runtime.github.calls).not.toContain('uploadSarif');
@@ -397,6 +428,31 @@ describe('quandle_main_run_action', () => {
       expect(text).not.toContain(RIGHT_TO_LEFT_OVERRIDE);
     });
 
+    it('[PUB-4] cuts the query string off the location in the message of a result', async () => {
+      const location = `https://preview.example.com/${SECRET_PATH}?token=FAKE_QUERY_VALUE`;
+      const [result] = readUploadedResults(await runWith([{ ...SECRET, location }]));
+      const text = String(result?.message?.text);
+      expect(text).toContain(`https://preview.example.com/${SECRET_PATH}`);
+      expect(text).not.toContain('FAKE_QUERY_VALUE');
+      expect(text).not.toContain('?');
+    });
+
+    it('[PUB-4] cuts the fragment off the location in the message of a result', async () => {
+      const location = `https://preview.example.com/${SECRET_PATH}#FAKE_FRAGMENT_VALUE`;
+      const [result] = readUploadedResults(await runWith([{ ...SECRET, location }]));
+      const text = String(result?.message?.text);
+      expect(text).toContain(`https://preview.example.com/${SECRET_PATH}`);
+      expect(text).not.toContain('FAKE_FRAGMENT_VALUE');
+    });
+
+    it('[PUB-4] cuts a location that is not a URL at its first question mark', async () => {
+      const location = '/assets/index.js?token=FAKE_QUERY_VALUE';
+      const [result] = readUploadedResults(await runWith([{ ...SECRET, location }]));
+      const text = String(result?.message?.text);
+      expect(text).toContain('/assets/index.js');
+      expect(text).not.toContain('FAKE_QUERY_VALUE');
+    });
+
     it('[PUB-4] caps engine text in the file at 200 characters', async () => {
       const title = 'T'.repeat(300);
       const [result] = readUploadedResults(await runWith([{ ...SECRET, title }]));
@@ -481,6 +537,45 @@ describe('quandle_main_run_action', () => {
       expect(runtime.warnings).toContain(
         'Quandle: could not upload finding detail to code scanning (FAKE_UNAVAILABLE_REASON).',
       );
+    });
+
+    it('[PUB-5] warns once with the fixed reason when the event names no default branch', async () => {
+      const runtime = await runWith(ALL_FINDINGS, { event: deployEvent({ private: false }) });
+      expect(runtime.warnings).toEqual([
+        'Quandle: could not upload finding detail to code scanning (the event names no default branch).',
+      ]);
+    });
+
+    describe('on a preview deploy', () => {
+      const PREVIEW: FakeRuntimeOptions = { event: previewEvent(PUBLIC_REPOSITORY) };
+
+      it('[PUB-5] says in the job summary that the detail follows the next production scan', async () => {
+        const summary = readSummary(await runWith(ALL_FINDINGS, PREVIEW));
+        expect(summary.split(NEWLINE)).toContain(PREVIEW_LINE);
+      });
+
+      it('[PUB-5] says in the PR comment that the detail follows the next production scan', async () => {
+        const comment = readWrittenBody(await runWith(ALL_FINDINGS, PREVIEW));
+        expect(comment.split(NEWLINE)).toContain(PREVIEW_LINE);
+      });
+
+      it('[PUB-5] never says the detail is already in code scanning alerts on a preview deploy', async () => {
+        const summary = readSummary(await runWith(ALL_FINDINGS, PREVIEW));
+        expect(summary).toContain('qf_secret01');
+        expect(summary).not.toContain(UPLOADED_LINE);
+      });
+
+      it('[PUB-5] never warns about the upload on a preview deploy, even when the event names no default branch', async () => {
+        const runtime = await runWith(ALL_FINDINGS, { event: previewEvent({ private: false }) });
+        expect(readSummary(runtime)).toContain('qf_secret01');
+        expect(runtime.warnings).toEqual([]);
+      });
+
+      it('[PUB-5] still withholds the location and evidence from the job summary on a preview deploy', async () => {
+        const summary = readSummary(await runWith(ALL_FINDINGS, PREVIEW));
+        expect(summary.split(NEWLINE)).toContain(SECRET_LINE);
+        expect(summary).not.toContain(SECRET_PATH);
+      });
     });
 
     it('[PUB-5] says the detail is withheld, without calling GitHub, when the event names no default branch', async () => {

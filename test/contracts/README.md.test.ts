@@ -6,7 +6,8 @@
 // Also covers (private): none
 //
 // Proves the README names the optional permission and says what it is for: the detail
-// of secret and exposed-file findings on a public repository, in code scanning alerts.
+// of secret and exposed-file findings on a public repository, in code scanning alerts; and
+// what the permission itself allows beyond that.
 // Rules: PRM-4
 // ==========================================================================
 import { readFileSync } from 'node:fs';
@@ -24,5 +25,13 @@ describe('README.md', () => {
     const paragraph = README.split(BLANK_LINE).find((part) => part.includes('security-events: write')) ?? '';
     expect(paragraph).toContain('code scanning');
     expect(paragraph).toContain('public');
+  });
+
+  it('[PRM-4] says the permission itself allows listing, dismissing and deleting code scanning alerts and analyses', () => {
+    const paragraph = README.split(BLANK_LINE).find((part) => part.includes('security-events: write')) ?? '';
+    expect(paragraph).toMatch(/list/i);
+    expect(paragraph).toMatch(/dismiss/i);
+    expect(paragraph).toMatch(/delet/i);
+    expect(paragraph).toContain('analyses');
   });
 });
