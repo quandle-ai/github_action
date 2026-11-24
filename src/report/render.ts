@@ -2,11 +2,13 @@
 // Quandle GitHub Action · src/report/render.ts
 // Written by Feudal Security, LLC (Quandle). MIT License, see LICENSE.
 //
-// Builds everything the developer reads: the job summary, the PR comment and the production issue.
+// Builds everything the developer reads: the job summary, the PR comment, the production issue and
+// the SARIF file for code scanning alerts.
 // Owns the ONLY escaping functions (Markdown-safe, code-span-safe, log-safe).
 // Everything untrusted must pass through one of them before output.
 // Pure: no network, no @actions imports.
-// Rules: TGT-3, TGT-10, FND-1, FND-3, FND-7, OUT-1, OUT-7 … OUT-13, ERR-4, IGN-2, IGN-10, MOCK-2
+// Rules: TGT-3, TGT-10, FND-1, FND-3, FND-7, OUT-1, OUT-7 … OUT-13, ERR-4, IGN-2, IGN-10, MOCK-2,
+// Rules: PUB-2, PUB-4, PUB-5
 // ==========================================================================
 import { SEVERITY_RANK } from '../scan/severity';
 import type {
@@ -16,6 +18,7 @@ import type {
   IgnoredFinding,
   IgnoreOutcome,
   ScanResult,
+  Severity,
 } from '../types';
 
 export const MOCK_BANNER = '> ⚠ **MOCK RESULTS — not a real scan**';
@@ -39,6 +42,23 @@ const ACTIVE_CHECKS_UNVERIFIED_LINE =
   '**Exposed-file checks did not run.** Quandle only requests files such as `/.env` and `/.git/HEAD` from a site that proves it belongs to this repository. To turn them on, serve a file at `/.well-known/quandle.txt` containing this line:';
 const ACTIVE_CHECKS_FOLDER_LINE =
   'In Next.js, Vite and Astro projects that file is `public/.well-known/quandle.txt`.';
+// PUB-2: on a public repository, findings whose rule starts with one of these are withheld findings.
+const WITHHELD_RULE_PREFIXES = ['secret/', 'file/'] as const;
+// PUB-5: the fixed line after the findings of an output that lists a withheld finding.
+const DETAIL_UPLOADED_LINE =
+  "Location and evidence for secret and exposed-file findings are in this repository's code scanning alerts (Security tab), visible only to people with write access.";
+const DETAIL_WITHHELD_LINE =
+  "Location and evidence for secret and exposed-file findings are withheld because this repository is public. To see them in code scanning alerts, add `security-events: write` to the workflow's permissions.";
+// PUB-4: the code scanning level for each severity.
+const SARIF_LEVELS: Readonly<Record<Severity, 'error' | 'warning' | 'note'>> = {
+  critical: 'error',
+  high: 'error',
+  medium: 'warning',
+  low: 'note',
+};
+// PUB-4: the one location of every result. GitHub accepts no result without a location and no https:
+// location, so this placeholder stands for the deployed site; the real location is in the message.
+const SARIF_PLACEHOLDER_URI = 'quandle/deployed-site';
 // OUT-1: GitHub caps a step summary at 1 MiB; 100 findings stays far below it.
 export const MAX_SUMMARY_FINDINGS = 100;
 const MAX_TEXT_LENGTH = 200;
@@ -55,6 +75,20 @@ const INVISIBLE_CHARACTERS =
 // always placed mid-line.
 const MARKDOWN_SPECIAL_CHARACTERS = /[\\`*_{}[\]()#+!|~$]/g;
 const HTML_ENTITIES: Record<'&' | '<' | '>', string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;' };
+
+// PUB-2 / PUB-5: how the outputs of a public repository show withheld findings. Passed only for a
+// real scan of a public repository; without it, every finding is shown in full.
+export interface Withholding {
+  // PUB-5: true when GitHub accepted the upload of the withheld detail to code scanning.
+  readonly isDetailUploaded: boolean;
+}
+
+// How a list of findings is shown: the date to mark on each finding whose ignore expired, and
+// what a public repository withholds (absent: nothing).
+interface FindingDisplay {
+  readonly expiredDates: ReadonlyMap<Finding, string>;
+  readonly withholding: Withholding | undefined;
+}
 
 // Makes untrusted text safe to place inline in Markdown (summary, comment, issue).
 // Blocks HTML, links, auto-links (://, www.), @mentions, code spans, math ($), new blocks, and
@@ -97,10 +131,15 @@ export function quandle_render_build_notScannedSummary(reason: string): string {
 
 // Builds the job summary Markdown: mock banner (if mock), then either "Not scanned: <reason>"
 // or the scanned URL/environment and the findings, most important first, at most 100, and last
-// what the engine said about the exposed-file checks.
+// what the engine said about the exposed-file checks. With a withholding, withheld findings are listed
+// without location or evidence (PUB-2).
 // Returns: the summary Markdown; all untrusted values escaped.
-// Rules: OUT-1, OUT-13, ERR-4, MOCK-2, FND-3
-export function quandle_render_build_jobSummary(result: ScanResult, outcome: IgnoreOutcome): string {
+// Rules: OUT-1, OUT-13, ERR-4, MOCK-2, FND-3, PUB-2, PUB-5
+export function quandle_render_build_jobSummary(
+  result: ScanResult,
+  outcome: IgnoreOutcome,
+  withholding?: Withholding,
+): string {
   const banner = result.isMock ? [MOCK_BANNER, ''] : [];
   if (result.status !== 'scanned') {
     return [...banner, quandle_render_build_notScannedSummary(result.reason)].join('\n');
@@ -112,7 +151,7 @@ export function quandle_render_build_jobSummary(result: ScanResult, outcome: Ign
     '',
     checked,
     '',
-    ...quandle_render_build_findingLines(outcome),
+    ...quandle_render_build_findingLines(outcome, withholding),
     ...quandle_render_build_ignoredLines(outcome.ignored),
     ...quandle_render_build_activeChecksLines(result.activeChecks),
   ].join('\n');
@@ -143,21 +182,62 @@ function quandle_render_build_activeChecksLines(activeChecks: ActiveChecks | und
 // The findings part of the summary: the shown findings, most important first (new, or with an
 // expired ignore, before other states, then critical → low), at most 100 lines, then
 // "…and N more findings (not shown)." GitHub caps a step summary at 1 MiB, so the list must stay bounded.
+// When a listed finding is withheld, the PUB-5 line follows.
 // Returns: the Markdown lines, or a "No findings" line when nothing is shown.
-// Rules: OUT-1, IGN-2, IGN-10
-function quandle_render_build_findingLines(outcome: IgnoreOutcome): string[] {
+// Rules: OUT-1, IGN-2, IGN-10, PUB-2, PUB-5
+function quandle_render_build_findingLines(
+  outcome: IgnoreOutcome,
+  withholding: Withholding | undefined,
+): string[] {
   if (outcome.shown.length === 0) {
     return [outcome.ignored.length > 0 ? 'No findings apart from the ignored ones below.' : 'No findings.'];
   }
-  const expiredDates = quandle_render_build_expiredDates(outcome);
+  const display: FindingDisplay = { expiredDates: quandle_render_build_expiredDates(outcome), withholding };
   const ordered = [...outcome.shown].sort((a, b) =>
-    quandle_render_compare_findingImportance(a, b, expiredDates),
+    quandle_render_compare_findingImportance(a, b, display.expiredDates),
   );
-  const lines = ordered
-    .slice(0, MAX_SUMMARY_FINDINGS)
-    .map((finding) => quandle_render_build_findingLine(finding, expiredDates.get(finding)));
+  const listed = ordered.slice(0, MAX_SUMMARY_FINDINGS);
+  const lines = listed.map((finding) => quandle_render_build_listedFindingLine(finding, display));
   const hiddenCount = outcome.shown.length - lines.length;
-  return hiddenCount === 0 ? lines : [...lines, '', `…and ${hiddenCount} more findings (not shown).`];
+  const more = hiddenCount === 0 ? [] : ['', `…and ${hiddenCount} more findings (not shown).`];
+  const isAnyWithheld = listed.some((finding) =>
+    quandle_render_check_isWithheldFinding(finding, withholding),
+  );
+  return [...lines, ...more, ...(isAnyWithheld ? quandle_render_build_withheldNoticeLines(withholding) : [])];
+}
+
+// True when this finding is listed without location or evidence: a public repository's outputs, and
+// a rule that starts with secret/ or file/ (exact, case-sensitive).
+// Rules: PUB-2
+function quandle_render_check_isWithheldFinding(
+  finding: Finding,
+  withholding: Withholding | undefined,
+): withholding is Withholding {
+  return withholding !== undefined && quandle_render_check_hasWithheldRule(finding);
+}
+
+// True when the finding's rule is one a public repository withholds (secret/ or file/).
+// Rules: PUB-2
+function quandle_render_check_hasWithheldRule(finding: Finding): boolean {
+  return WITHHELD_RULE_PREFIXES.some((prefix) => finding.rule.startsWith(prefix));
+}
+
+// The fixed line that says where the withheld detail is, or how to see it (PUB-5).
+// Returns: a blank line and the fixed line, or none without a withholding.
+// Rules: PUB-5
+function quandle_render_build_withheldNoticeLines(withholding: Withholding | undefined): string[] {
+  if (withholding === undefined) return [];
+  return ['', withholding.isDetailUploaded ? DETAIL_UPLOADED_LINE : DETAIL_WITHHELD_LINE];
+}
+
+// One finding's bullet, in full or, when it is withheld, without location or evidence.
+// Returns: the Markdown line.
+// Rules: PUB-2
+function quandle_render_build_listedFindingLine(finding: Finding, display: FindingDisplay): string {
+  const expiredDate = display.expiredDates.get(finding);
+  return quandle_render_check_isWithheldFinding(finding, display.withholding)
+    ? quandle_render_build_withheldFindingLine(finding, expiredDate)
+    : quandle_render_build_findingLine(finding, expiredDate);
 }
 
 // The ignored part of the summary: "Ignored (N)", then each finding's id and escaped reason,
@@ -228,10 +308,32 @@ function quandle_render_build_findingLine(finding: Finding, expiredDate?: string
   ];
   if (finding.evidence !== undefined)
     parts.push(`evidence ${quandle_render_escape_codeSpan(finding.evidence)}`);
-  if (finding.behindProtection === true) parts.push(BEHIND_PROTECTION_LABEL);
+  return `- ${[...parts, ...quandle_render_build_findingMarks(finding, expiredDate)].join(' · ')}`;
+}
+
+// A withheld finding's bullet: severity · state · title · id (· behind protection label)
+// (· ignore expired <date>). Never its location or evidence.
+// Returns: the Markdown line, with every field escaped.
+// Rules: PUB-2, FND-3, FND-7, IGN-2
+function quandle_render_build_withheldFindingLine(finding: Finding, expiredDate?: string): string {
+  const parts = [
+    `**${quandle_render_escape_markdownText(finding.severity)}**`,
+    quandle_render_escape_markdownText(finding.state),
+    quandle_render_escape_markdownText(finding.title),
+    quandle_render_escape_codeSpan(finding.id),
+  ];
+  return `- ${[...parts, ...quandle_render_build_findingMarks(finding, expiredDate)].join(' · ')}`;
+}
+
+// The marks that end a bullet: the behind-protection label and the expired-ignore date, when they apply.
+// Returns: the parts, in that order.
+// Rules: FND-7, IGN-2
+function quandle_render_build_findingMarks(finding: Finding, expiredDate: string | undefined): string[] {
+  const marks: string[] = [];
+  if (finding.behindProtection === true) marks.push(BEHIND_PROTECTION_LABEL);
   if (expiredDate !== undefined)
-    parts.push(`ignore expired ${quandle_render_escape_markdownText(expiredDate)}`);
-  return `- ${parts.join(' · ')}`;
+    marks.push(`ignore expired ${quandle_render_escape_markdownText(expiredDate)}`);
+  return marks;
 }
 
 // Shared first step of every escaper: removes invisible characters, turns control characters into
@@ -251,12 +353,14 @@ function quandle_render_clean_plainText(text: string): string {
 // new findings, the existing ones whose ignore expired and the ones fixed since the last deploy, at
 // Medium or above only, most important first, at most 50 in all and at most 60,000 characters in all.
 // Never lists low, ignored, other existing or already-present findings (those are in the job summary);
-// only says how many were ignored. Same result, same text.
+// only says how many were ignored. Same result, same text. With a withholding, withheld findings are
+// listed without location or evidence (PUB-2).
 // Returns: the comment Markdown; every untrusted value escaped.
-// Rules: OUT-7, OUT-8, OUT-9, MOCK-2, FND-1, FND-3, TGT-10, IGN-2, IGN-10
+// Rules: OUT-7, OUT-8, OUT-9, MOCK-2, FND-1, FND-3, TGT-10, IGN-2, IGN-10, PUB-2, PUB-5
 export function quandle_render_build_prComment(
   result: Extract<ScanResult, { status: 'scanned' }>,
   outcome: IgnoreOutcome,
+  withholding?: Withholding,
 ): string {
   const expiredDates = quandle_render_build_expiredDates(outcome);
   const newFindings = quandle_render_select_findingsByState(outcome.shown, ['new']);
@@ -276,7 +380,7 @@ export function quandle_render_build_prComment(
       { title: '**Ignore expired**', findings: lapsedFindings },
       { title: '**Fixed**', findings: fixedFindings },
     ],
-    expiredDates,
+    { expiredDates, withholding },
     quandle_render_get_sectionBudget(head, tail),
   );
   return [...head, ...sections, ...tail].join('\n');
@@ -303,15 +407,19 @@ interface FindingSection {
 // The titled lists of a comment or issue, in order, sharing one budget of 50 findings and one budget of
 // characters. The list stops at the first finding that does not fit either; every finding after it is
 // left out too. Each finding is marked when its ignore expired; an empty list is left out; then
-// "…and N more, see the job summary."
+// "…and N more, see the job summary." When a kept finding is withheld, the PUB-5 line comes last;
+// the first withheld finding kept also pays for it.
 // Returns: the Markdown lines, within characterBudget (counting the new line before each line).
-// Rules: OUT-8, OUT-11, IGN-2
+// Rules: OUT-8, OUT-11, IGN-2, PUB-2, PUB-5
 function quandle_render_build_findingSections(
   sections: readonly FindingSection[],
-  expiredDates: ReadonlyMap<Finding, string>,
+  display: FindingDisplay,
   characterBudget: number,
 ): string[] {
   const lines: string[] = [];
+  const notice = quandle_render_build_withheldNoticeLines(display.withholding);
+  const noticeCost = notice.reduce((total, line) => total + line.length + 1, 0);
+  let isNoticeKept = false;
   let room = MAX_COMMENT_FINDINGS;
   let charactersLeft = characterBudget - MORE_LINE_RESERVE;
   let hiddenCount = 0;
@@ -320,20 +428,27 @@ function quandle_render_build_findingSections(
     const sectionCost = section.title.length + 2;
     const kept: string[] = [];
     for (const finding of section.findings) {
-      const line = quandle_render_build_findingLine(finding, expiredDates.get(finding));
-      const cost = line.length + 1 + (kept.length === 0 ? sectionCost : 0);
+      const line = quandle_render_build_listedFindingLine(finding, display);
+      const isWithheld = quandle_render_check_isWithheldFinding(finding, display.withholding);
+      const cost =
+        line.length +
+        1 +
+        (kept.length === 0 ? sectionCost : 0) +
+        (isWithheld && !isNoticeKept ? noticeCost : 0);
       if (room === 0 || cost > charactersLeft) {
         room = 0;
         hiddenCount += 1;
         continue;
       }
       kept.push(line);
+      isNoticeKept ||= isWithheld;
       room -= 1;
       charactersLeft -= cost;
     }
     if (kept.length > 0) lines.push('', section.title, ...kept);
   }
-  return hiddenCount > 0 ? [...lines, '', `…and ${hiddenCount} more, see the job summary.`] : lines;
+  const more = hiddenCount > 0 ? ['', `…and ${hiddenCount} more, see the job summary.`] : [];
+  return [...lines, ...more, ...(isNoticeKept ? notice : [])];
 }
 
 // What is left of the 60,000-character body for the finding lists, once the lines before and after
@@ -392,12 +507,14 @@ function quandle_render_build_checkedLine(result: ScanResult): string {
 // of exposures, the checked URL, then everything still exposed (new, existing, already-present; marked
 // when an ignore expired) and what was fixed since the last scan, at Medium or above only, most
 // important first, at most 50 and at most 60,000 characters. Leaves ignored findings out and only says
-// how many. Same result, same text.
+// how many. Same result, same text. With a withholding, withheld findings are listed without location
+// or evidence (PUB-2).
 // Returns: the issue Markdown; every untrusted value escaped.
-// Rules: OUT-10, OUT-11, OUT-12, MOCK-2, FND-1, FND-3, TGT-10, IGN-2, IGN-10
+// Rules: OUT-10, OUT-11, OUT-12, MOCK-2, FND-1, FND-3, TGT-10, IGN-2, IGN-10, PUB-2, PUB-5
 export function quandle_render_build_productionIssue(
   result: Extract<ScanResult, { status: 'scanned' }>,
   outcome: IgnoreOutcome,
+  withholding?: Withholding,
 ): string {
   const expiredDates = quandle_render_build_expiredDates(outcome);
   const exposed = quandle_render_select_findingsByState(outcome.shown, [
@@ -424,8 +541,43 @@ export function quandle_render_build_productionIssue(
       { title: '**Exposed**', findings: exposed },
       { title: '**Fixed**', findings: fixed },
     ],
-    expiredDates,
+    { expiredDates, withholding },
     quandle_render_get_sectionBudget(head, tail),
   );
   return [...head, ...sections, ...tail].join('\n');
+}
+
+// Builds the SARIF 2.1.0 file that carries the detail of withheld findings to code scanning alerts:
+// one run from the tool Quandle, one result per withheld finding that is shown and not resolved.
+// With every withheld finding resolved, the run has no results, so earlier alerts close.
+// Returns: the file's JSON text, or undefined when no shown finding is withheld (nothing to upload).
+// Rules: PUB-3, PUB-4
+export function quandle_render_build_codeScanningSarif(outcome: IgnoreOutcome): string | undefined {
+  const withheld = outcome.shown.filter((finding) => quandle_render_check_hasWithheldRule(finding));
+  if (withheld.length === 0) return undefined;
+  const results = withheld
+    .filter((finding) => finding.state !== 'resolved')
+    .map((finding) => quandle_render_build_sarifResult(finding));
+  return JSON.stringify({ version: '2.1.0', runs: [{ tool: { driver: { name: 'Quandle' } }, results }] });
+}
+
+// One SARIF result: the rule, the finding id as fingerprint, the level, a message with the title,
+// the location and the redacted evidence, and the one placeholder location. Every engine text is
+// cleaned to one line and capped at 200 characters.
+// Returns: the result object.
+// Rules: PUB-4, FND-3
+function quandle_render_build_sarifResult(finding: Finding): Record<string, unknown> {
+  const parts = [
+    quandle_render_clean_plainText(finding.title),
+    quandle_render_clean_plainText(finding.location),
+  ];
+  if (finding.evidence !== undefined)
+    parts.push(`evidence ${quandle_render_clean_plainText(finding.evidence)}`);
+  return {
+    ruleId: quandle_render_clean_plainText(finding.rule),
+    level: SARIF_LEVELS[finding.severity],
+    message: { text: parts.join(' · ') },
+    partialFingerprints: { quandleFindingId: quandle_render_clean_plainText(finding.id) },
+    locations: [{ physicalLocation: { artifactLocation: { uri: SARIF_PLACEHOLDER_URI } } }],
+  };
 }

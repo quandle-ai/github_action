@@ -30591,6 +30591,7 @@ function quandle_api_build_notScannedResult(request2, status, reason, scanId) {
 }
 
 // src/io/github.ts
+var import_node_zlib = require("node:zlib");
 var GITHUB_ACTIONS_BOT_LOGIN = "github-actions[bot]";
 var IGNORE_FILE_PATH = ".quandle-ignore.yml";
 var GITHUB_REQUEST_TIMEOUT_MS = 1e4;
@@ -30715,6 +30716,17 @@ function quandle_github_build_api(octokit, repository) {
       const sha = quandle_github_read_textField(head.data, ["commit", "sha"]);
       return sha === void 0 ? { ok: false, reason: UNEXPECTED_RESPONSE } : { ok: true, value: sha };
     }),
+    uploadSarif: (upload) => quandle_github_call_safely("security-events: write", async () => {
+      await octokit.request("POST /repos/{owner}/{repo}/code-scanning/sarifs", {
+        owner,
+        repo,
+        commit_sha: upload.commitSha,
+        ref: upload.ref,
+        sarif: (0, import_node_zlib.gzipSync)(upload.sarif).toString("base64"),
+        request: quandle_github_build_requestOptions()
+      });
+      return { ok: true, value: void 0 };
+    }),
     readIgnoreFile: () => quandle_github_call_safely("contents: read", async () => {
       try {
         const response = await octokit.request("GET /repos/{owner}/{repo}/contents/{path}", {
@@ -30838,6 +30850,16 @@ var BEHIND_PROTECTION_LABEL = "behind protection on this deployment, public once
 var ACTIVE_CHECKS_RAN_LINE = "Exposed-file checks ran: this site is verified for this repository.";
 var ACTIVE_CHECKS_UNVERIFIED_LINE = "**Exposed-file checks did not run.** Quandle only requests files such as `/.env` and `/.git/HEAD` from a site that proves it belongs to this repository. To turn them on, serve a file at `/.well-known/quandle.txt` containing this line:";
 var ACTIVE_CHECKS_FOLDER_LINE = "In Next.js, Vite and Astro projects that file is `public/.well-known/quandle.txt`.";
+var WITHHELD_RULE_PREFIXES = ["secret/", "file/"];
+var DETAIL_UPLOADED_LINE = "Location and evidence for secret and exposed-file findings are in this repository's code scanning alerts (Security tab), visible only to people with write access.";
+var DETAIL_WITHHELD_LINE = "Location and evidence for secret and exposed-file findings are withheld because this repository is public. To see them in code scanning alerts, add `security-events: write` to the workflow's permissions.";
+var SARIF_LEVELS = {
+  critical: "error",
+  high: "error",
+  medium: "warning",
+  low: "note"
+};
+var SARIF_PLACEHOLDER_URI = "quandle/deployed-site";
 var MAX_SUMMARY_FINDINGS = 100;
 var MAX_TEXT_LENGTH = 200;
 var ELLIPSIS = "\u2026";
@@ -30858,7 +30880,7 @@ function quandle_render_escape_logText(text) {
 function quandle_render_build_notScannedSummary(reason) {
   return [SUMMARY_HEADING, "", `**Not scanned:** ${quandle_render_escape_markdownText(reason)}`].join("\n");
 }
-function quandle_render_build_jobSummary(result, outcome) {
+function quandle_render_build_jobSummary(result, outcome, withholding) {
   const banner = result.isMock ? [MOCK_BANNER, ""] : [];
   if (result.status !== "scanned") {
     return [...banner, quandle_render_build_notScannedSummary(result.reason)].join("\n");
@@ -30870,7 +30892,7 @@ function quandle_render_build_jobSummary(result, outcome) {
     "",
     checked,
     "",
-    ...quandle_render_build_findingLines(outcome),
+    ...quandle_render_build_findingLines(outcome, withholding),
     ...quandle_render_build_ignoredLines(outcome.ignored),
     ...quandle_render_build_activeChecksLines(result.activeChecks)
   ].join("\n");
@@ -30891,17 +30913,36 @@ function quandle_render_build_activeChecksLines(activeChecks) {
       ];
   }
 }
-function quandle_render_build_findingLines(outcome) {
+function quandle_render_build_findingLines(outcome, withholding) {
   if (outcome.shown.length === 0) {
     return [outcome.ignored.length > 0 ? "No findings apart from the ignored ones below." : "No findings."];
   }
-  const expiredDates = quandle_render_build_expiredDates(outcome);
+  const display = { expiredDates: quandle_render_build_expiredDates(outcome), withholding };
   const ordered = [...outcome.shown].sort(
-    (a, b) => quandle_render_compare_findingImportance(a, b, expiredDates)
+    (a, b) => quandle_render_compare_findingImportance(a, b, display.expiredDates)
   );
-  const lines = ordered.slice(0, MAX_SUMMARY_FINDINGS).map((finding) => quandle_render_build_findingLine(finding, expiredDates.get(finding)));
+  const listed = ordered.slice(0, MAX_SUMMARY_FINDINGS);
+  const lines = listed.map((finding) => quandle_render_build_listedFindingLine(finding, display));
   const hiddenCount = outcome.shown.length - lines.length;
-  return hiddenCount === 0 ? lines : [...lines, "", `\u2026and ${hiddenCount} more findings (not shown).`];
+  const more = hiddenCount === 0 ? [] : ["", `\u2026and ${hiddenCount} more findings (not shown).`];
+  const isAnyWithheld = listed.some(
+    (finding) => quandle_render_check_isWithheldFinding(finding, withholding)
+  );
+  return [...lines, ...more, ...isAnyWithheld ? quandle_render_build_withheldNoticeLines(withholding) : []];
+}
+function quandle_render_check_isWithheldFinding(finding, withholding) {
+  return withholding !== void 0 && quandle_render_check_hasWithheldRule(finding);
+}
+function quandle_render_check_hasWithheldRule(finding) {
+  return WITHHELD_RULE_PREFIXES.some((prefix) => finding.rule.startsWith(prefix));
+}
+function quandle_render_build_withheldNoticeLines(withholding) {
+  if (withholding === void 0) return [];
+  return ["", withholding.isDetailUploaded ? DETAIL_UPLOADED_LINE : DETAIL_WITHHELD_LINE];
+}
+function quandle_render_build_listedFindingLine(finding, display) {
+  const expiredDate = display.expiredDates.get(finding);
+  return quandle_render_check_isWithheldFinding(finding, display.withholding) ? quandle_render_build_withheldFindingLine(finding, expiredDate) : quandle_render_build_findingLine(finding, expiredDate);
 }
 function quandle_render_build_ignoredLines(ignored) {
   if (ignored.length === 0) return [];
@@ -30944,17 +30985,30 @@ function quandle_render_build_findingLine(finding, expiredDate) {
   ];
   if (finding.evidence !== void 0)
     parts.push(`evidence ${quandle_render_escape_codeSpan(finding.evidence)}`);
-  if (finding.behindProtection === true) parts.push(BEHIND_PROTECTION_LABEL);
+  return `- ${[...parts, ...quandle_render_build_findingMarks(finding, expiredDate)].join(" \xB7 ")}`;
+}
+function quandle_render_build_withheldFindingLine(finding, expiredDate) {
+  const parts = [
+    `**${quandle_render_escape_markdownText(finding.severity)}**`,
+    quandle_render_escape_markdownText(finding.state),
+    quandle_render_escape_markdownText(finding.title),
+    quandle_render_escape_codeSpan(finding.id)
+  ];
+  return `- ${[...parts, ...quandle_render_build_findingMarks(finding, expiredDate)].join(" \xB7 ")}`;
+}
+function quandle_render_build_findingMarks(finding, expiredDate) {
+  const marks = [];
+  if (finding.behindProtection === true) marks.push(BEHIND_PROTECTION_LABEL);
   if (expiredDate !== void 0)
-    parts.push(`ignore expired ${quandle_render_escape_markdownText(expiredDate)}`);
-  return `- ${parts.join(" \xB7 ")}`;
+    marks.push(`ignore expired ${quandle_render_escape_markdownText(expiredDate)}`);
+  return marks;
 }
 function quandle_render_clean_plainText(text) {
   const cleaned = text.replace(INVISIBLE_CHARACTERS, "").replace(CONTROL_CHARACTERS, " ").replace(/\s+/g, " ").trim();
   if (cleaned.length <= MAX_TEXT_LENGTH) return cleaned;
   return cleaned.slice(0, MAX_TEXT_LENGTH - ELLIPSIS.length) + ELLIPSIS;
 }
-function quandle_render_build_prComment(result, outcome) {
+function quandle_render_build_prComment(result, outcome, withholding) {
   const expiredDates = quandle_render_build_expiredDates(outcome);
   const newFindings = quandle_render_select_findingsByState(outcome.shown, ["new"]);
   const lapsedFindings = quandle_render_select_findingsByState([...expiredDates.keys()], ["existing"]);
@@ -30973,7 +31027,7 @@ function quandle_render_build_prComment(result, outcome) {
       { title: "**Ignore expired**", findings: lapsedFindings },
       { title: "**Fixed**", findings: fixedFindings }
     ],
-    expiredDates,
+    { expiredDates, withholding },
     quandle_render_get_sectionBudget(head, tail)
   );
   return [...head, ...sections, ...tail].join("\n");
@@ -30986,8 +31040,11 @@ function quandle_render_build_prCommentHeading(newCount, lapsedCount) {
   }
   return "### Quandle: no new exposures in this deploy";
 }
-function quandle_render_build_findingSections(sections, expiredDates, characterBudget) {
+function quandle_render_build_findingSections(sections, display, characterBudget) {
   const lines = [];
+  const notice2 = quandle_render_build_withheldNoticeLines(display.withholding);
+  const noticeCost = notice2.reduce((total, line) => total + line.length + 1, 0);
+  let isNoticeKept = false;
   let room = MAX_COMMENT_FINDINGS;
   let charactersLeft = characterBudget - MORE_LINE_RESERVE;
   let hiddenCount = 0;
@@ -30995,20 +31052,23 @@ function quandle_render_build_findingSections(sections, expiredDates, characterB
     const sectionCost = section.title.length + 2;
     const kept = [];
     for (const finding of section.findings) {
-      const line = quandle_render_build_findingLine(finding, expiredDates.get(finding));
-      const cost = line.length + 1 + (kept.length === 0 ? sectionCost : 0);
+      const line = quandle_render_build_listedFindingLine(finding, display);
+      const isWithheld = quandle_render_check_isWithheldFinding(finding, display.withholding);
+      const cost = line.length + 1 + (kept.length === 0 ? sectionCost : 0) + (isWithheld && !isNoticeKept ? noticeCost : 0);
       if (room === 0 || cost > charactersLeft) {
         room = 0;
         hiddenCount += 1;
         continue;
       }
       kept.push(line);
+      isNoticeKept ||= isWithheld;
       room -= 1;
       charactersLeft -= cost;
     }
     if (kept.length > 0) lines.push("", section.title, ...kept);
   }
-  return hiddenCount > 0 ? [...lines, "", `\u2026and ${hiddenCount} more, see the job summary.`] : lines;
+  const more = hiddenCount > 0 ? ["", `\u2026and ${hiddenCount} more, see the job summary.`] : [];
+  return [...lines, ...more, ...isNoticeKept ? notice2 : []];
 }
 function quandle_render_get_sectionBudget(head, tail) {
   const fixedLength = [...head, ...tail].reduce((total, line) => total + line.length + 1, 0);
@@ -31031,7 +31091,7 @@ function quandle_render_build_checkedLine(result) {
   const url = quandle_render_escape_codeSpan(quandle_render_build_displayUrl(result.url));
   return `Checked ${url}${environment}.`;
 }
-function quandle_render_build_productionIssue(result, outcome) {
+function quandle_render_build_productionIssue(result, outcome, withholding) {
   const expiredDates = quandle_render_build_expiredDates(outcome);
   const exposed = quandle_render_select_findingsByState(outcome.shown, [
     "new",
@@ -31054,10 +31114,31 @@ function quandle_render_build_productionIssue(result, outcome) {
       { title: "**Exposed**", findings: exposed },
       { title: "**Fixed**", findings: fixed }
     ],
-    expiredDates,
+    { expiredDates, withholding },
     quandle_render_get_sectionBudget(head, tail)
   );
   return [...head, ...sections, ...tail].join("\n");
+}
+function quandle_render_build_codeScanningSarif(outcome) {
+  const withheld = outcome.shown.filter((finding) => quandle_render_check_hasWithheldRule(finding));
+  if (withheld.length === 0) return void 0;
+  const results = withheld.filter((finding) => finding.state !== "resolved").map((finding) => quandle_render_build_sarifResult(finding));
+  return JSON.stringify({ version: "2.1.0", runs: [{ tool: { driver: { name: "Quandle" } }, results }] });
+}
+function quandle_render_build_sarifResult(finding) {
+  const parts = [
+    quandle_render_clean_plainText(finding.title),
+    quandle_render_clean_plainText(finding.location)
+  ];
+  if (finding.evidence !== void 0)
+    parts.push(`evidence ${quandle_render_clean_plainText(finding.evidence)}`);
+  return {
+    ruleId: quandle_render_clean_plainText(finding.rule),
+    level: SARIF_LEVELS[finding.severity],
+    message: { text: parts.join(" \xB7 ") },
+    partialFingerprints: { quandleFindingId: quandle_render_clean_plainText(finding.id) },
+    locations: [{ physicalLocation: { artifactLocation: { uri: SARIF_PLACEHOLDER_URI } } }]
+  };
 }
 
 // src/report/comment.ts
@@ -31442,8 +31523,44 @@ async function quandle_main_run_steps(runtime) {
   const outcome = await quandle_main_apply_ignoreFile(runtime, result, inputs.value.githubToken);
   quandle_main_set_jobResult(runtime, { result, outcome }, inputs.value.failOn);
   quandle_main_set_scanOutputs(runtime, { result, outcome });
-  await quandle_main_publish_results(runtime, { result, outcome }, scanTarget, inputs.value);
-  await quandle_main_write_summaryBestEffort(runtime, quandle_render_build_jobSummary(result, outcome));
+  const withholding = await quandle_main_upload_withheldDetail(runtime, {
+    report: { result, outcome },
+    event,
+    sha: scanTarget.sha,
+    githubToken: inputs.value.githubToken
+  });
+  await quandle_main_publish_results(runtime, { result, outcome, withholding }, scanTarget, inputs.value);
+  await quandle_main_write_summaryBestEffort(
+    runtime,
+    quandle_render_build_jobSummary(result, outcome, withholding)
+  );
+}
+function quandle_main_read_repositoryVisibility(event) {
+  const payload = event.payload;
+  const repository = typeof payload?.repository === "object" ? payload.repository : void 0;
+  const defaultBranch = repository?.default_branch;
+  return {
+    isPublic: repository?.private !== true,
+    ...typeof defaultBranch === "string" && defaultBranch !== "" ? { defaultBranch } : {}
+  };
+}
+async function quandle_main_upload_withheldDetail(runtime, upload) {
+  const { result, outcome } = upload.report;
+  if (result.status !== "scanned" || result.isMock) return void 0;
+  const repository = quandle_main_read_repositoryVisibility(upload.event);
+  if (!repository.isPublic) return void 0;
+  const sarif = quandle_render_build_codeScanningSarif(outcome);
+  if (sarif === void 0 || repository.defaultBranch === void 0) return { isDetailUploaded: false };
+  const github = runtime.getGitHubApi(upload.githubToken);
+  const uploaded = github.ok ? await github.value.uploadSarif({
+    commitSha: upload.sha,
+    ref: `refs/heads/${repository.defaultBranch}`,
+    sarif
+  }) : github;
+  if (uploaded.ok) return { isDetailUploaded: true };
+  const reason = quandle_render_escape_logText(uploaded.reason);
+  runtime.warning(`Quandle: could not upload finding detail to code scanning (${reason}).`);
+  return { isDetailUploaded: false };
 }
 async function quandle_main_resolve_productionDeploy(runtime, target, githubToken) {
   if (target.source !== "deployment" || target.isProductionEnvironment) return target;
@@ -31571,9 +31688,9 @@ var CHANNEL_LABELS = {
   issue: "the production issue"
 };
 async function quandle_main_publish_results(runtime, report, target, inputs) {
-  const { result, outcome } = report;
+  const { result, outcome, withholding } = report;
   if (result.status !== "scanned") return;
-  const scanned = { result, outcome };
+  const scanned = { result, outcome, withholding };
   const channels = [
     ...inputs.isCommentEnabled && target.source === "deployment" ? ["comment"] : [],
     ...inputs.isIssueEnabled && target.isProductionEnvironment ? ["issue"] : []
@@ -31586,7 +31703,7 @@ async function quandle_main_publish_results(runtime, report, target, inputs) {
   if (!pullRequests.ok) return quandle_main_warn_publishFailures(runtime, channels, pullRequests.reason);
   const matching = pullRequests.value.filter((pr) => pr.isOpen && pr.headSha === target.sha);
   if (channels.includes("comment")) {
-    const body = quandle_render_build_prComment(result, outcome);
+    const body = quandle_render_build_prComment(result, outcome, withholding);
     for (const pullRequest of matching) {
       const failure = await quandle_main_publish_prComment(github.value, pullRequest.number, body, outcome);
       if (failure !== void 0) quandle_main_warn_publishFailures(runtime, ["comment"], failure);
@@ -31599,7 +31716,7 @@ async function quandle_main_publish_results(runtime, report, target, inputs) {
 async function quandle_main_publish_productionIssue(runtime, github, report) {
   const issues = await github.listOpenIssues();
   if (!issues.ok) return quandle_main_warn_publishFailures(runtime, ["issue"], issues.reason);
-  const body = quandle_render_build_productionIssue(report.result, report.outcome);
+  const body = quandle_render_build_productionIssue(report.result, report.outcome, report.withholding);
   const action = quandle_issue_decide_action(quandle_issue_find_ownIssue(issues.value), body, report.outcome);
   if (action.kind === "leave") return;
   const written = action.kind === "create" ? await github.createIssue(action.title, action.body) : await github.updateIssue(action.issueNumber, action.body);

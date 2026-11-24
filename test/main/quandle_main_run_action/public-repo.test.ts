@@ -3,7 +3,8 @@
 // Written by Feudal Security, LLC (Quandle). MIT License, see LICENSE.
 //
 // Tests: src/main.ts → quandle_main_run_action (public repositories, through a fake engine)
-// Also covers (private): none
+// Also covers (private): quandle_main_upload_withheldDetail, quandle_main_read_repositoryVisibility;
+// and src/report/render.ts → quandle_render_build_codeScanningSarif
 //
 // Proves that on a public repository a secret or exposed-file finding is listed in the job
 // summary, the PR comment and the production issue without its location or evidence; that
@@ -472,6 +473,14 @@ describe('quandle_main_run_action', () => {
     it('[PUB-5] says the detail is withheld when GitHub answers the upload with a 500', async () => {
       const runtime = await runWith(ALL_FINDINGS, { github: { failingMethod: 'uploadSarif' } });
       expect(readSummary(runtime).split(NEWLINE)).toContain(WITHHELD_LINE);
+    });
+
+    it('[PUB-5] says the detail is withheld, and warns with our reason, when the GitHub API cannot be set up', async () => {
+      const runtime = await runWith(ALL_FINDINGS, { gitHubUnavailableReason: 'FAKE_UNAVAILABLE_REASON' });
+      expect(readSummary(runtime).split(NEWLINE)).toContain(WITHHELD_LINE);
+      expect(runtime.warnings).toContain(
+        'Quandle: could not upload finding detail to code scanning (FAKE_UNAVAILABLE_REASON).',
+      );
     });
 
     it('[PUB-5] says the detail is withheld, without calling GitHub, when the event names no default branch', async () => {

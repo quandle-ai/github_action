@@ -40,7 +40,9 @@ inputs:
     description: >
       Token used for PR comments, the production issue, and reading .quandle-ignore.yml. Leave it as the
       default: Quandle only updates comments and issues written by github-actions[bot], so any other token
-      posts a new comment or issue on every run.
+      posts a new comment or issue on every run. On a public repository it also uploads the location and
+      evidence of secret and exposed-file findings to code scanning, if the workflow grants the optional
+      security-events: write permission.
     required: false
     default: ${{ github.token }}
 
