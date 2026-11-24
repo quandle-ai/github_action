@@ -30853,6 +30853,12 @@ var ACTIVE_CHECKS_FOLDER_LINE = "In Next.js, Vite and Astro projects that file i
 var WITHHELD_RULE_PREFIXES = ["secret/", "file/"];
 var DETAIL_UPLOADED_LINE = "Location and evidence for secret and exposed-file findings are in this repository's code scanning alerts (Security tab), visible only to people with write access.";
 var DETAIL_WITHHELD_LINE = "Location and evidence for secret and exposed-file findings are withheld because this repository is public. To see them in code scanning alerts, add `security-events: write` to the workflow's permissions.";
+var DETAIL_AFTER_PRODUCTION_SCAN_LINE = "Location and evidence for secret and exposed-file findings are withheld because this repository is public. They reach this repository's code scanning alerts (Security tab), visible only to people with write access, after the next production scan, if the workflow grants `security-events: write`.";
+var WITHHELD_NOTICE_LINES = {
+  uploaded: DETAIL_UPLOADED_LINE,
+  "not-uploaded": DETAIL_WITHHELD_LINE,
+  "after-production-scan": DETAIL_AFTER_PRODUCTION_SCAN_LINE
+};
 var SARIF_LEVELS = {
   critical: "error",
   high: "error",
@@ -30938,7 +30944,7 @@ function quandle_render_check_hasWithheldRule(finding) {
 }
 function quandle_render_build_withheldNoticeLines(withholding) {
   if (withholding === void 0) return [];
-  return ["", withholding.isDetailUploaded ? DETAIL_UPLOADED_LINE : DETAIL_WITHHELD_LINE];
+  return ["", WITHHELD_NOTICE_LINES[withholding.detailStatus]];
 }
 function quandle_render_build_listedFindingLine(finding, display) {
   const expiredDate = display.expiredDates.get(finding);
@@ -31128,7 +31134,7 @@ function quandle_render_build_codeScanningSarif(outcome) {
 function quandle_render_build_sarifResult(finding) {
   const parts = [
     quandle_render_clean_plainText(finding.title),
-    quandle_render_clean_plainText(finding.location)
+    quandle_render_clean_plainText(finding.location.replace(/[?#][\s\S]*$/, ""))
   ];
   if (finding.evidence !== void 0)
     parts.push(`evidence ${quandle_render_clean_plainText(finding.evidence)}`);
@@ -31526,7 +31532,7 @@ async function quandle_main_run_steps(runtime) {
   const withholding = await quandle_main_upload_withheldDetail(runtime, {
     report: { result, outcome },
     event,
-    sha: scanTarget.sha,
+    target: scanTarget,
     githubToken: inputs.value.githubToken
   });
   await quandle_main_publish_results(runtime, { result, outcome, withholding }, scanTarget, inputs.value);
@@ -31544,23 +31550,25 @@ function quandle_main_read_repositoryVisibility(event) {
     ...typeof defaultBranch === "string" && defaultBranch !== "" ? { defaultBranch } : {}
   };
 }
+var NO_DEFAULT_BRANCH_REASON = "the event names no default branch";
 async function quandle_main_upload_withheldDetail(runtime, upload) {
   const { result, outcome } = upload.report;
   if (result.status !== "scanned" || result.isMock) return void 0;
   const repository = quandle_main_read_repositoryVisibility(upload.event);
   if (!repository.isPublic) return void 0;
+  if (!upload.target.isProductionEnvironment) return { detailStatus: "after-production-scan" };
   const sarif = quandle_render_build_codeScanningSarif(outcome);
-  if (sarif === void 0 || repository.defaultBranch === void 0) return { isDetailUploaded: false };
-  const github = runtime.getGitHubApi(upload.githubToken);
+  if (sarif === void 0) return { detailStatus: "not-uploaded" };
+  const github = repository.defaultBranch === void 0 ? { ok: false, reason: NO_DEFAULT_BRANCH_REASON } : runtime.getGitHubApi(upload.githubToken);
   const uploaded = github.ok ? await github.value.uploadSarif({
-    commitSha: upload.sha,
+    commitSha: upload.target.sha,
     ref: `refs/heads/${repository.defaultBranch}`,
     sarif
   }) : github;
-  if (uploaded.ok) return { isDetailUploaded: true };
+  if (uploaded.ok) return { detailStatus: "uploaded" };
   const reason = quandle_render_escape_logText(uploaded.reason);
   runtime.warning(`Quandle: could not upload finding detail to code scanning (${reason}).`);
-  return { isDetailUploaded: false };
+  return { detailStatus: "not-uploaded" };
 }
 async function quandle_main_resolve_productionDeploy(runtime, target, githubToken) {
   if (target.source !== "deployment" || target.isProductionEnvironment) return target;

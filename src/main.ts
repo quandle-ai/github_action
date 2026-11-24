@@ -145,7 +145,7 @@ async function quandle_main_run_steps(runtime: ActionRuntime): Promise<void> {
   const withholding = await quandle_main_upload_withheldDetail(runtime, {
     report: { result, outcome },
     event,
-    sha: scanTarget.sha,
+    target: scanTarget,
     githubToken: inputs.value.githubToken,
   });
   await quandle_main_publish_results(runtime, { result, outcome, withholding }, scanTarget, inputs.value);
@@ -176,18 +176,22 @@ function quandle_main_read_repositoryVisibility(event: EventContext): Repository
   };
 }
 
-// What the upload of withheld detail needs: the scan, the event, the scanned commit and the token.
+// PUB-5: the fixed reason a payload with no default branch gives for not uploading.
+const NO_DEFAULT_BRANCH_REASON = 'the event names no default branch';
+
+// What the upload of withheld detail needs: the scan, the event, the scanned target and the token.
 interface WithheldDetailUpload {
   readonly report: ScanReport;
   readonly event: EventContext;
-  readonly sha: string;
+  readonly target: Extract<Target, { kind: 'scan' }>;
   readonly githubToken: string;
 }
 
 // On a public repository, uploads the detail of withheld findings to code scanning, once, for the
-// scanned commit and the default branch. Never for a private repository, a mock or a run that did not
-// scan. A failed upload, or a payload with no default branch, only withholds: a failed upload warns
-// once and never changes the job result or outputs.
+// scanned commit and the default branch. Only for a production deploy: a preview deploy never uploads
+// and never warns. Never for a private repository, a mock or a run that did not scan. An upload that
+// was not accepted, or a payload with no default branch, only withholds: it warns once and never
+// changes the job result or outputs.
 // Returns: how the outputs withhold (undefined when nothing is withheld), and whether GitHub took the file.
 // Side effects: GitHub API call; a warning when the upload fails.
 // Rules: PUB-1, PUB-3, PUB-5, PRM-3, PRM-4, TRU-6
@@ -199,20 +203,25 @@ async function quandle_main_upload_withheldDetail(
   if (result.status !== 'scanned' || result.isMock) return undefined;
   const repository = quandle_main_read_repositoryVisibility(upload.event);
   if (!repository.isPublic) return undefined;
+  // PUB-3: the alerts stand for what production exposes; a preview must not replace them.
+  if (!upload.target.isProductionEnvironment) return { detailStatus: 'after-production-scan' };
   const sarif = quandle_render_build_codeScanningSarif(outcome);
-  if (sarif === undefined || repository.defaultBranch === undefined) return { isDetailUploaded: false };
-  const github = runtime.getGitHubApi(upload.githubToken);
+  if (sarif === undefined) return { detailStatus: 'not-uploaded' };
+  const github =
+    repository.defaultBranch === undefined
+      ? { ok: false as const, reason: NO_DEFAULT_BRANCH_REASON }
+      : runtime.getGitHubApi(upload.githubToken);
   const uploaded = github.ok
     ? await github.value.uploadSarif({
-        commitSha: upload.sha,
+        commitSha: upload.target.sha,
         ref: `refs/heads/${repository.defaultBranch}`,
         sarif,
       })
     : github;
-  if (uploaded.ok) return { isDetailUploaded: true };
+  if (uploaded.ok) return { detailStatus: 'uploaded' };
   const reason = quandle_render_escape_logText(uploaded.reason);
   runtime.warning(`Quandle: could not upload finding detail to code scanning (${reason}).`);
-  return { isDetailUploaded: false };
+  return { detailStatus: 'not-uploaded' };
 }
 
 // Decides whether a deploy is a production deploy (TGT-11): one whose payload already says so is, and

@@ -49,6 +49,14 @@ const DETAIL_UPLOADED_LINE =
   "Location and evidence for secret and exposed-file findings are in this repository's code scanning alerts (Security tab), visible only to people with write access.";
 const DETAIL_WITHHELD_LINE =
   "Location and evidence for secret and exposed-file findings are withheld because this repository is public. To see them in code scanning alerts, add `security-events: write` to the workflow's permissions.";
+const DETAIL_AFTER_PRODUCTION_SCAN_LINE =
+  "Location and evidence for secret and exposed-file findings are withheld because this repository is public. They reach this repository's code scanning alerts (Security tab), visible only to people with write access, after the next production scan, if the workflow grants `security-events: write`.";
+// PUB-5: the fixed line for each way the withheld detail can stand.
+const WITHHELD_NOTICE_LINES: Readonly<Record<WithheldDetailStatus, string>> = {
+  uploaded: DETAIL_UPLOADED_LINE,
+  'not-uploaded': DETAIL_WITHHELD_LINE,
+  'after-production-scan': DETAIL_AFTER_PRODUCTION_SCAN_LINE,
+};
 // PUB-4: the code scanning level for each severity.
 const SARIF_LEVELS: Readonly<Record<Severity, 'error' | 'warning' | 'note'>> = {
   critical: 'error',
@@ -76,11 +84,14 @@ const INVISIBLE_CHARACTERS =
 const MARKDOWN_SPECIAL_CHARACTERS = /[\\`*_{}[\]()#+!|~$]/g;
 const HTML_ENTITIES: Record<'&' | '<' | '>', string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;' };
 
+// PUB-5: where the withheld detail stands: GitHub accepted the upload, the upload was not accepted (or
+// could not be attempted), or a preview deploy, which never uploads (PUB-3).
+export type WithheldDetailStatus = 'uploaded' | 'not-uploaded' | 'after-production-scan';
+
 // PUB-2 / PUB-5: how the outputs of a public repository show withheld findings. Passed only for a
 // real scan of a public repository; without it, every finding is shown in full.
 export interface Withholding {
-  // PUB-5: true when GitHub accepted the upload of the withheld detail to code scanning.
-  readonly isDetailUploaded: boolean;
+  readonly detailStatus: WithheldDetailStatus;
 }
 
 // How a list of findings is shown: the date to mark on each finding whose ignore expired, and
@@ -227,7 +238,7 @@ function quandle_render_check_hasWithheldRule(finding: Finding): boolean {
 // Rules: PUB-5
 function quandle_render_build_withheldNoticeLines(withholding: Withholding | undefined): string[] {
   if (withholding === undefined) return [];
-  return ['', withholding.isDetailUploaded ? DETAIL_UPLOADED_LINE : DETAIL_WITHHELD_LINE];
+  return ['', WITHHELD_NOTICE_LINES[withholding.detailStatus]];
 }
 
 // One finding's bullet, in full or, when it is withheld, without location or evidence.
@@ -562,14 +573,15 @@ export function quandle_render_build_codeScanningSarif(outcome: IgnoreOutcome): 
 }
 
 // One SARIF result: the rule, the finding id as fingerprint, the level, a message with the title,
-// the location and the redacted evidence, and the one placeholder location. Every engine text is
-// cleaned to one line and capped at 200 characters.
+// the location (cut at its first ? or #: a query string or fragment can carry a token) and the redacted
+// evidence, and the one placeholder location. Every engine text is cleaned to one line and capped at
+// 200 characters.
 // Returns: the result object.
 // Rules: PUB-4, FND-3
 function quandle_render_build_sarifResult(finding: Finding): Record<string, unknown> {
   const parts = [
     quandle_render_clean_plainText(finding.title),
-    quandle_render_clean_plainText(finding.location),
+    quandle_render_clean_plainText(finding.location.replace(/[?#][\s\S]*$/, '')),
   ];
   if (finding.evidence !== undefined)
     parts.push(`evidence ${quandle_render_clean_plainText(finding.evidence)}`);
