@@ -3,12 +3,13 @@
 // Written by Feudal Security, LLC (Quandle). MIT License, see LICENSE.
 //
 // Runs the Action end to end: mask secrets, validate inputs, resolve the target,
-// scan (or mock), apply the ignore file, set the job result and outputs, publish
-// the PR comment or production issue, then write the summary.
+// scan (or mock), apply the ignore file, set the job result and outputs, upload the
+// withheld detail of a public repository, publish the PR comment or production issue,
+// then write the summary.
 // Orchestration only; reaches GitHub through the injected ActionRuntime. Never throws.
 // Rules: TGT-3, TGT-6, TGT-9, TGT-11, TRU-1, TRU-5, TRU-6, PRM-2, PRM-3, SEV-1 … SEV-4, OUT-1 … OUT-4, OUT-6,
 // Rules: OUT-7, OUT-9, OUT-10, OUT-12, ERR-1 … ERR-4, IGN-3, IGN-4, IGN-7, IGN-9, IGN-10, MOCK-1, MOCK-2,
-// Rules: MOCK-4, IO-1, IO-2
+// Rules: MOCK-4, IO-1, IO-2, PUB-1, PUB-3, PUB-5
 // ==========================================================================
 import { quandle_api_build_scanRequest, quandle_api_request_postScanToEngine } from './io/api';
 import type { EngineFetch } from './io/api';
@@ -17,6 +18,7 @@ import { quandle_issue_decide_action, quandle_issue_find_ownIssue } from './repo
 import { quandle_ignore_apply_entriesToFindings, quandle_ignore_parse_ignoreFile } from './scan/ignore';
 import { quandle_mock_build_scanResult, quandle_mock_parse_scenarioInput } from './scan/mock';
 import {
+  quandle_render_build_codeScanningSarif,
   quandle_render_build_jobSummary,
   quandle_render_build_notScannedSummary,
   quandle_render_build_prComment,
@@ -33,6 +35,7 @@ import {
   quandle_target_resolve_scanTargetFromEvent,
 } from './scan/target';
 import type { GitHubApi } from './io/github';
+import type { Withholding } from './report/render';
 import type {
   EventContext,
   FailOn,
@@ -139,8 +142,86 @@ async function quandle_main_run_steps(runtime: ActionRuntime): Promise<void> {
   const outcome = await quandle_main_apply_ignoreFile(runtime, result, inputs.value.githubToken);
   quandle_main_set_jobResult(runtime, { result, outcome }, inputs.value.failOn);
   quandle_main_set_scanOutputs(runtime, { result, outcome });
-  await quandle_main_publish_results(runtime, { result, outcome }, scanTarget, inputs.value);
-  await quandle_main_write_summaryBestEffort(runtime, quandle_render_build_jobSummary(result, outcome));
+  const withholding = await quandle_main_upload_withheldDetail(runtime, {
+    report: { result, outcome },
+    event,
+    target: scanTarget,
+    githubToken: inputs.value.githubToken,
+  });
+  await quandle_main_publish_results(runtime, { result, outcome, withholding }, scanTarget, inputs.value);
+  await quandle_main_write_summaryBestEffort(
+    runtime,
+    quandle_render_build_jobSummary(result, outcome, withholding),
+  );
+}
+
+// A public repository's visibility facts from the event payload (untrusted).
+interface RepositoryVisibility {
+  readonly isPublic: boolean;
+  // PUB-3: the default branch the upload is made for; absent when the payload names none.
+  readonly defaultBranch?: string;
+}
+
+// Reads whether the repository is public, and its default branch, from the event payload. Only
+// repository.private === true makes it private: anything else counts as public (PUB-1).
+// Returns: the visibility, with the default branch when it is non-empty text.
+// Rules: PUB-1, PUB-3
+function quandle_main_read_repositoryVisibility(event: EventContext): RepositoryVisibility {
+  const payload = event.payload as { repository?: { private?: unknown; default_branch?: unknown } } | null;
+  const repository = typeof payload?.repository === 'object' ? payload.repository : undefined;
+  const defaultBranch = repository?.default_branch;
+  return {
+    isPublic: repository?.private !== true,
+    ...(typeof defaultBranch === 'string' && defaultBranch !== '' ? { defaultBranch } : {}),
+  };
+}
+
+// PUB-5: the fixed reason a payload with no default branch gives for not uploading.
+const NO_DEFAULT_BRANCH_REASON = 'the event names no default branch';
+
+// What the upload of withheld detail needs: the scan, the event, the scanned target and the token.
+interface WithheldDetailUpload {
+  readonly report: ScanReport;
+  readonly event: EventContext;
+  readonly target: Extract<Target, { kind: 'scan' }>;
+  readonly githubToken: string;
+}
+
+// On a public repository, uploads the detail of withheld findings to code scanning, once, for the
+// scanned commit and the default branch. Only for a production deploy: a preview deploy never uploads
+// and never warns. Never for a private repository, a mock or a run that did not scan. An upload that
+// was not accepted, or a payload with no default branch, only withholds: it warns once and never
+// changes the job result or outputs.
+// Returns: how the outputs withhold (undefined when nothing is withheld), and whether GitHub took the file.
+// Side effects: GitHub API call; a warning when the upload fails.
+// Rules: PUB-1, PUB-3, PUB-5, PRM-3, PRM-4, TRU-6
+async function quandle_main_upload_withheldDetail(
+  runtime: ActionRuntime,
+  upload: WithheldDetailUpload,
+): Promise<Withholding | undefined> {
+  const { result, outcome } = upload.report;
+  if (result.status !== 'scanned' || result.isMock) return undefined;
+  const repository = quandle_main_read_repositoryVisibility(upload.event);
+  if (!repository.isPublic) return undefined;
+  // PUB-3: the alerts stand for what production exposes; a preview must not replace them.
+  if (!upload.target.isProductionEnvironment) return { detailStatus: 'after-production-scan' };
+  const sarif = quandle_render_build_codeScanningSarif(outcome);
+  if (sarif === undefined) return { detailStatus: 'not-uploaded' };
+  const github =
+    repository.defaultBranch === undefined
+      ? { ok: false as const, reason: NO_DEFAULT_BRANCH_REASON }
+      : runtime.getGitHubApi(upload.githubToken);
+  const uploaded = github.ok
+    ? await github.value.uploadSarif({
+        commitSha: upload.target.sha,
+        ref: `refs/heads/${repository.defaultBranch}`,
+        sarif,
+      })
+    : github;
+  if (uploaded.ok) return { detailStatus: 'uploaded' };
+  const reason = quandle_render_escape_logText(uploaded.reason);
+  runtime.warning(`Quandle: could not upload finding detail to code scanning (${reason}).`);
+  return { detailStatus: 'not-uploaded' };
 }
 
 // Decides whether a deploy is a production deploy (TGT-11): one whose payload already says so is, and
@@ -287,10 +368,12 @@ function quandle_main_read_actionInputs(
   };
 }
 
-// A scan result together with its findings as sorted by the ignore file.
+// A scan result together with its findings as sorted by the ignore file, and what a public
+// repository's outputs withhold (PUB-2; absent when nothing is withheld).
 interface ScanReport<Result extends ScanResult = ScanResult> {
   readonly result: Result;
   readonly outcome: IgnoreOutcome;
+  readonly withholding?: Withholding | undefined;
 }
 
 // Sets the job result: fail open with a warning when not scanned; otherwise fail only on
@@ -377,9 +460,9 @@ async function quandle_main_publish_results(
   target: Extract<Target, { kind: 'scan' }>,
   inputs: Inputs,
 ): Promise<void> {
-  const { result, outcome } = report;
+  const { result, outcome, withholding } = report;
   if (result.status !== 'scanned') return;
-  const scanned: ScanReport<typeof result> = { result, outcome };
+  const scanned: ScanReport<typeof result> = { result, outcome, withholding };
   const channels: PublishChannel[] = [
     ...(inputs.isCommentEnabled && target.source === 'deployment' ? (['comment'] as const) : []),
     ...(inputs.isIssueEnabled && target.isProductionEnvironment ? (['issue'] as const) : []),
@@ -393,7 +476,7 @@ async function quandle_main_publish_results(
   // OUT-2 / OUT-3: only open PRs whose head is still this commit; a moved-on PR gets nothing.
   const matching = pullRequests.value.filter((pr) => pr.isOpen && pr.headSha === target.sha);
   if (channels.includes('comment')) {
-    const body = quandle_render_build_prComment(result, outcome);
+    const body = quandle_render_build_prComment(result, outcome, withholding);
     for (const pullRequest of matching) {
       const failure = await quandle_main_publish_prComment(github.value, pullRequest.number, body, outcome);
       if (failure !== undefined) quandle_main_warn_publishFailures(runtime, ['comment'], failure);
@@ -416,7 +499,7 @@ async function quandle_main_publish_productionIssue(
 ): Promise<void> {
   const issues = await github.listOpenIssues();
   if (!issues.ok) return quandle_main_warn_publishFailures(runtime, ['issue'], issues.reason);
-  const body = quandle_render_build_productionIssue(report.result, report.outcome);
+  const body = quandle_render_build_productionIssue(report.result, report.outcome, report.withholding);
   const action = quandle_issue_decide_action(quandle_issue_find_ownIssue(issues.value), body, report.outcome);
   if (action.kind === 'leave') return;
   const written =

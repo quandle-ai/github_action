@@ -4,17 +4,20 @@
 //
 // GitHub REST calls on an injected Octokit: find the PRs for a commit; list, create
 // and update PR comments; list, create, update and close the production issue; read
-// .quandle-ignore.yml from the default branch; and read the default branch's head
-// commit. Every response is untrusted and validated.
+// .quandle-ignore.yml from the default branch; read the default branch's head
+// commit; and upload a SARIF file to code scanning. Every response is untrusted and validated.
 // Never throws: every call returns ok or our own one-line reason (PRM-3), never
 // a library error or response body.
-// Rules: TGT-11, PRM-3, OUT-2, OUT-7, OUT-9, OUT-10, OUT-12, IGN-9
+// Rules: TGT-11, PRM-3, PRM-4, PUB-3, OUT-2, OUT-7, OUT-9, OUT-10, OUT-12, IGN-9
 // ==========================================================================
+import { gzipSync } from 'node:zlib';
+
 // OUT-7 / OUT-10: the identity the GITHUB_TOKEN writes as; the only author whose comment or issue we edit.
 export const GITHUB_ACTIONS_BOT_LOGIN = 'github-actions[bot]';
 
 // The permission a call needs, with its access level, named in its 403 hint (PRM-3).
-type GitHubPermission = 'pull-requests: write' | 'issues: write' | 'contents: read';
+type GitHubPermission =
+  'pull-requests: write' | 'issues: write' | 'contents: read' | 'security-events: write';
 
 // IGN-9: the ignore file, at the repository root.
 const IGNORE_FILE_PATH = '.quandle-ignore.yml';
@@ -60,6 +63,14 @@ export interface IssueRef {
   readonly authorLogin: string;
 }
 
+// PUB-3: one SARIF file for code scanning: the scanned commit, the full ref (refs/heads/<branch>)
+// and the file's text, before gzip and base64.
+export interface SarifUpload {
+  readonly commitSha: string;
+  readonly ref: string;
+  readonly sarif: string;
+}
+
 // A GitHub call's result: the value, or our own one-line reason it failed.
 export type GitHubResult<T> =
   { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reason: string };
@@ -77,12 +88,14 @@ export interface GitHubApi {
   readIgnoreFile(): Promise<GitHubResult<string | undefined>>;
   // TGT-11: the commit at the head of the repository's default branch.
   readDefaultBranchHeadSha(): Promise<GitHubResult<string>>;
+  // PUB-3: uploads one SARIF file to the repository's code scanning alerts.
+  uploadSarif(upload: SarifUpload): Promise<GitHubResult<void>>;
 }
 
 // Builds the GitHub API for one repository on top of an Octokit instance.
 // Every call passes a timeout, validates the response, and never throws.
-// Returns: the PR, comment, issue and ignore-file calls main uses.
-// Rules: OUT-2, OUT-7, OUT-9, OUT-10, OUT-12, PRM-3, IGN-9, TGT-11
+// Returns: the PR, comment, issue, ignore-file, default-branch and SARIF-upload calls main uses.
+// Rules: OUT-2, OUT-7, OUT-9, OUT-10, OUT-12, PRM-3, PRM-4, PUB-3, IGN-9, TGT-11
 export function quandle_github_build_api(octokit: OctokitApi, repository: RepositoryRef): GitHubApi {
   const { owner, repo } = repository;
   return {
@@ -210,6 +223,19 @@ export function quandle_github_build_api(octokit: OctokitApi, repository: Reposi
         });
         const sha = quandle_github_read_textField(head.data, ['commit', 'sha']);
         return sha === undefined ? { ok: false, reason: UNEXPECTED_RESPONSE } : { ok: true, value: sha };
+      }),
+    uploadSarif: (upload) =>
+      quandle_github_call_safely('security-events: write', async () => {
+        // PUB-3: GitHub takes the file as gzip, then base64.
+        await octokit.request('POST /repos/{owner}/{repo}/code-scanning/sarifs', {
+          owner,
+          repo,
+          commit_sha: upload.commitSha,
+          ref: upload.ref,
+          sarif: gzipSync(upload.sarif).toString('base64'),
+          request: quandle_github_build_requestOptions(),
+        });
+        return { ok: true, value: undefined };
       }),
     readIgnoreFile: () =>
       quandle_github_call_safely<string | undefined>('contents: read', async () => {

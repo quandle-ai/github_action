@@ -12,6 +12,9 @@ The deploy URL, the environment name, whether it is a production deploy, and the
 **Will it fail my build?**
 Only for a *new* finding at or above `fail-on`, which defaults to `critical`. Findings that were already there before never fail the job. Set `fail-on: never` to only report.
 
+**What does it show on a public repository?**
+Anyone can read the job summary, PR comment and issue of a public repository, so secret and exposed-file findings are listed there without their location or evidence. To get those details in your repository's code scanning alerts, which only people with write access can see, add the optional `security-events: write` to the workflow's permissions. That permission lets the workflow's token do more than Quandle needs: it can also list, dismiss and delete this repository's code scanning alerts and analyses. Quandle only uploads.
+
 **How do I turn on exposed-file checks?**
 Quandle only requests files such as `/.env` and `/.git/HEAD` from a site that proves it belongs to your repository. The job summary shows one line; serve it in a file at `/.well-known/quandle.txt` (in Next.js, Vite and Astro, that is `public/.well-known/quandle.txt`). Preview deploys are covered too, since the file ships with your code.
 

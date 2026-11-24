@@ -124,7 +124,7 @@ describe('quandle_runtime_build_actionRuntime', () => {
     );
   });
 
-  it('[OUT-5] hands out a GitHub API with only PR, comment, issue, ignore-file and default-branch calls, nothing that sets a check or status', () => {
+  it('[OUT-5] hands out a GitHub API with only PR, comment, issue, ignore-file, default-branch and SARIF-upload calls, nothing that sets a check or status', () => {
     const environment = {
       ...buildEnvironment([]),
       env: { ...buildEnvironment([]).env, GITHUB_REPOSITORY: 'owner/repo' },
@@ -145,6 +145,7 @@ describe('quandle_runtime_build_actionRuntime', () => {
         'readIgnoreFile',
         'updateIssue',
         'updatePullRequestComment',
+        'uploadSarif',
       ].sort(),
     );
   });

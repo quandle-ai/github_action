@@ -3,8 +3,8 @@
 // Written by Feudal Security, LLC (Quandle). MIT License, see LICENSE.
 //
 // In-memory GitHubApi for testing main without GitHub: holds PRs, their
-// comments, open issues and the ignore file, records every call and everything written, and can
-// make one call fail with our own reason (PRM-3).
+// comments, open issues and the ignore file, records every call, everything written and every SARIF
+// upload, and can make one call fail with our own reason (PRM-3).
 // ==========================================================================
 import type {
   GitHubApi,
@@ -12,6 +12,7 @@ import type {
   IssueRef,
   PullRequestComment,
   PullRequestRef,
+  SarifUpload,
 } from '../../src/io/github';
 
 export type FakeGitHubMethod = keyof GitHubApi;
@@ -27,6 +28,8 @@ export interface FakeGitHub extends GitHubApi {
   comments: Map<number, PullRequestComment[]>;
   written: FakeGitHubWrite[];
   issueTitles: string[];
+  // Every SARIF upload GitHub accepted (PUB-3).
+  sarifUploads: SarifUpload[];
 }
 
 export interface FakeGitHubOptions {
@@ -66,6 +69,7 @@ export function buildFakeGitHub(options: FakeGitHubOptions = {}): FakeGitHub {
     comments,
     written: [],
     issueTitles: [],
+    sarifUploads: [],
     async listPullRequestsForCommit(sha) {
       github.calls.push(`listPullRequestsForCommit:${sha}`);
       return failure('listPullRequestsForCommit') ?? { ok: true, value: options.pullRequests ?? [] };
@@ -114,6 +118,13 @@ export function buildFakeGitHub(options: FakeGitHubOptions = {}): FakeGitHub {
           value: options.defaultBranchHeadSha ?? DEFAULT_BRANCH_HEAD_SHA,
         }
       );
+    },
+    async uploadSarif(upload) {
+      github.calls.push('uploadSarif');
+      const failed = failure('uploadSarif');
+      if (failed) return failed;
+      github.sarifUploads.push(upload);
+      return { ok: true, value: undefined };
     },
     async readIgnoreFile() {
       github.calls.push('readIgnoreFile');

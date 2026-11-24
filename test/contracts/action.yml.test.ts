@@ -6,8 +6,9 @@
 // Also covers (private): none
 //
 // Proves action.yml declares exactly the inputs and outputs the spec defines,
-// no more and no fewer, so an input like api-url cannot quietly come back.
-// Rules: IO-1, OUT-6, TRU-4
+// no more and no fewer, so an input like api-url cannot quietly come back, and that
+// the github-token description names the optional permission and what it is for.
+// Rules: IO-1, OUT-6, PRM-4, TRU-4
 // ==========================================================================
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
@@ -36,5 +37,13 @@ describe('action.yml', () => {
 
   it('[TRU-4] has no api-url input, so the engine URL cannot be changed from a workflow', () => {
     expect(readSectionKeys('inputs')).not.toContain('api-url');
+  });
+
+  it('[PRM-4] names the optional security-events: write permission, and code scanning, in the github-token description', () => {
+    const start = ACTION_YML.indexOf('  github-token:');
+    const description = ACTION_YML.slice(start, ACTION_YML.indexOf('outputs:'));
+    expect(start).toBeGreaterThan(0);
+    expect(description).toContain('security-events: write');
+    expect(description).toContain('code scanning');
   });
 });
