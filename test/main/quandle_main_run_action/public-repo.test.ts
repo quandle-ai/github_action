@@ -8,7 +8,8 @@
 // Proves that on a public repository a secret or exposed-file finding is listed in the job
 // summary, the PR comment and the production issue without its location or evidence; that
 // the detail is uploaded once as a SARIF file for the scanned commit and the default branch,
-// before anything is written, holding exactly the withheld findings still exposed; that every
+// before anything is written, holding exactly the withheld findings still exposed, each located
+// by one fixed relative placeholder path and never by an https URL; that every
 // output says where the detail is, or how to turn it on when the upload was not accepted; and
 // that a failed upload only warns. A repository whose visibility the event does not state
 // counts as public.
@@ -135,6 +136,7 @@ interface SarifResult {
   level?: unknown;
   message?: { text?: unknown };
   partialFingerprints?: { quandleFindingId?: unknown };
+  locations?: unknown;
 }
 
 interface SarifRun {
@@ -354,6 +356,22 @@ describe('quandle_main_run_action', () => {
       expect(text).toContain('Test secret in shipped JavaScript');
       expect(text).toContain(`https://preview.example.com/${SECRET_PATH}`);
       expect(text).toContain(SECRET_EVIDENCE);
+    });
+
+    it('[PUB-4] gives each result exactly one location, the fixed relative path quandle/deployed-site', async () => {
+      const results = readUploadedResults(await runWith(ALL_FINDINGS));
+      expect(results).toHaveLength(2);
+      for (const result of results) {
+        expect(result.locations).toEqual([
+          { physicalLocation: { artifactLocation: { uri: 'quandle/deployed-site' } } },
+        ]);
+      }
+    });
+
+    it('[PUB-4] never uses the https location of a finding as the location of its result', async () => {
+      const [result] = readUploadedResults(await runWith([SECRET]));
+      expect(result).toBeDefined();
+      expect(JSON.stringify(result?.locations ?? [])).not.toContain('https:');
     });
 
     it('[PUB-4] leaves an ignored finding out of the file', async () => {
